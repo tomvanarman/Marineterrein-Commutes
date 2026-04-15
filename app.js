@@ -6,6 +6,7 @@
 import { CONFIG } from './config.js';
 
 console.log('🚀 Starting bike visualization...');
+const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImZhODc1ZmQ3ODRmOTQ3MTNiNWRmMGY2NTcwYjM0YTVjIiwiaCI6Im11cm11cjY0In0=';
 
 // Initialize map
 const map = new mapboxgl.Map({
@@ -496,6 +497,60 @@ async function setupAveragedSegments() {
   map.on('mouseleave', 'averaged-segments', () => { map.getCanvas().style.cursor = ''; });
 }
 
+async function updateIsochrone(active) {
+  const spinner = document.getElementById('isoSpinner');
+  
+  if (!active) {
+    if (map.getLayer('isoLayer')) map.setLayoutProperty('isoLayer', 'visibility', 'none');
+    return;
+  }
+
+  if (map.getSource('isoSource')) {
+    map.setLayoutProperty('isoLayer', 'visibility', 'visible');
+    return;
+  }
+
+  if (spinner) spinner.style.display = 'inline-block';
+
+  try {
+    const response = await fetch('https://api.openrouteservice.org/v2/isochrones/cycling-regular', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': ORS_API_KEY
+      },
+      body: JSON.stringify({
+        locations: [CONFIG.MAP_CENTER], // Reusing your existing center from config.js
+        range: [300, 600],
+        range_type: 'time'
+      })
+    });
+
+    const data = await response.json();
+
+    map.addSource('isoSource', { type: 'geojson', data: data });
+
+    map.addLayer({
+      id: 'isoLayer',
+      type: 'fill',
+      source: 'isoSource',
+      paint: {
+        'fill-color': [
+          'interpolate', ['linear'], ['get', 'value'],
+          300, '#34CCCC', // Matches your sc-cyan
+          600, '#FFCC33'  // Matches your sc-gold
+        ],
+        'fill-opacity': 0.2
+      }
+    }, 'osm'); // Ensures it stays behind your trip layers
+
+  } catch (err) {
+    console.error("Isochrone error:", err);
+  } finally {
+    if (spinner) spinner.style.display = 'none';
+  }
+}
+
 // Map event handlers (ie: initializing all data and layers)
 map.on('error', (e) => { console.error('❌ Map error:', e); });
 
@@ -834,6 +889,13 @@ function setupControls() {
 
   // Setup averaged segment controls
   setupAveragedSegmentControls();
+
+  const isoToggle = document.getElementById('isoToggle');
+  if (isoToggle) {
+    isoToggle.addEventListener('change', (e) => {
+      updateIsochrone(e.target.checked);
+    });
+  }
 }
 
 function setupClickHandlers() {
