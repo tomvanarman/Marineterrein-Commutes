@@ -526,11 +526,24 @@ map.on('load', async () => {
   }
 });
 
+function isFilteredMode() {
+  return showSpeedColors || showRoadQuality || showAveragedSegments || searchActive;
+}
+
 function updateStatsVisibility() {
   const statsEl = document.getElementById('stats');
   if (!statsEl) return;
+
   const anyLegendActive = showSpeedColors || showRoadQuality || showAveragedSegments;
-  statsEl.style.display = window.innerWidth <= 768 && anyLegendActive ? 'none' : 'block';
+
+  statsEl.style.display =
+    window.innerWidth <= 768 && anyLegendActive ? 'none' : 'block';
+
+  // 🔽 ADD THIS (sensor legend sync)
+  const sensorLegend = document.getElementById('sensorLegend');
+  if (sensorLegend) {
+    sensorLegend.style.display = isFilteredMode() ? 'none' : 'block';
+  }
 }
 
 window.addEventListener('resize', updateStatsVisibility);

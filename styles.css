@@ -340,6 +340,28 @@ input[type="range"] {
   display: none;
 }
 
+@media (max-width: 768px) {
+  #averagedModeGroup {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+
+    gap: 8px;
+    padding: 10px;
+
+    background: white;
+    border-top: 1px solid #ddd;
+    z-index: 9999;
+
+    overflow-x: auto;
+  }
+}
+
 /* All legends default to bottom right corner */
 .legend {
   position: absolute;
@@ -684,4 +706,17 @@ input[type="range"] {
     width: 100%;
     right: -100%;
   }
+}
+
+#mobileLegendContent {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px;
+  overflow-x: auto;
+}
+
+#mobileLegendContent > * {
+  flex: 0 0 auto;
+  min-width: 140px;
 }
