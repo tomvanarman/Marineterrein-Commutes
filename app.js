@@ -650,7 +650,7 @@ map.on('load', async () => {
           'line-cap': 'round'
       },
       'paint': {
-          'line-color': '#34CCCC', 
+          'line-color': '#ffffff', 
           'line-width': 2,
           'line-dasharray': [3, 2], 
           'line-opacity': 0.8
