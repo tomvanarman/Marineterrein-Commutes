@@ -230,7 +230,7 @@ function calculateAggregateStats() {
 
 function formatDuration(seconds) {
   const minutes = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
+  const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
   return `${minutes}m ${secs}s`;
 }
 
@@ -536,8 +536,13 @@ function updateStatsVisibility() {
 window.addEventListener('resize', updateStatsVisibility);
 
 function updateLegendPositions() {
-  const legendOrder = ['sensorLegend', 'speedLegend', 'roadQualityLegend', 'averagedSegmentsLegend'];
-  
+  const legendOrder = [
+    'averagedSegmentsLegend', // bottom (first in stacking)
+    'speedLegend',
+    'roadQualityLegend',
+    'sensorLegend' // top (last in stacking)
+  ];
+
   const visibleLegends = legendOrder
     .map(id => document.getElementById(id))
     .filter(el => el && el.style.display === 'block');
