@@ -526,21 +526,31 @@ map.on('load', async () => {
 });
 
 function updateLegendPositions() {
-  const legends = [
-    { id: 'sensorLegend', el: document.getElementById('sensorLegend') },
-    { id: 'speedLegend', el: document.getElementById('speedLegend') },
-    { id: 'roadQualityLegend', el: document.getElementById('roadQualityLegend') },
-    { id: 'averagedSegmentsLegend', el: document.getElementById('averagedSegmentsLegend') }
-  ].filter(legend => legend.el && legend.el.style.display === 'block');
+  const legendOrder = ['sensorLegend', 'speedLegend', 'roadQualityLegend', 'averagedSegmentsLegend'];
   
-  // Position from right to left, accounting for each legend's width
-  let cumulativeOffset = 10; 
-  
-  legends.forEach((legend, index) => {
-    legend.el.style.right = `${cumulativeOffset}px`;
-    const legendWidth = legend.el.offsetWidth || 220; 
-    cumulativeOffset += legendWidth + 10; 
-  });
+  const visibleLegends = legendOrder
+    .map(id => document.getElementById(id))
+    .filter(el => el && el.style.display === 'block');
+
+  const isMobile = window.innerWidth <= 768;
+
+  if (isMobile) {
+    // Stack vertically from bottom-right
+    let cumulativeBottom = 10;
+    visibleLegends.forEach(el => {
+      el.style.right = '10px';
+      el.style.bottom = `${cumulativeBottom}px`;
+      cumulativeBottom += (el.offsetHeight || el.scrollHeight || 150) + 8;
+    });
+  } else {
+    // Original horizontal stacking for desktop
+    let cumulativeOffset = 10;
+    visibleLegends.forEach(el => {
+      el.style.bottom = '10px';
+      el.style.right = `${cumulativeOffset}px`;
+      cumulativeOffset += (el.offsetWidth || 220) + 10;
+    });
+  }
 }
 
 function setupAveragedSegmentControls() {
@@ -570,7 +580,7 @@ function setupAveragedSegmentControls() {
         console.log('📊 Averaged segments OFF');
       }
       
-      setTimeout(updateLegendPositions, 10);
+      setTimeout(updateLegendPositions, 50);
     });
   }
   
@@ -708,7 +718,7 @@ function setupControls() {
         speedModeGroup.style.display = 'none';
       }
       
-      setTimeout(updateLegendPositions, 10);
+      setTimeout(updateLegendPositions, 50);
     });
   }
 
