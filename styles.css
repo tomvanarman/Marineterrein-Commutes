@@ -365,7 +365,7 @@ input[type="range"] {
 /* All legends default to bottom right corner */
 .legend {
   position: absolute;
-  bottom: 10px;
+  bottom: 20px;
   right: 10px;
   background: var(--sc-panel-bg);
   border: 1px solid var(--sc-panel-border);
