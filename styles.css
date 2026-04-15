@@ -665,7 +665,4 @@ input[type="range"] {
     width: 100%;
     right: -100%;
   }
-  #stats {
-    transition: bottom 0.2s ease;
-  }
 }
