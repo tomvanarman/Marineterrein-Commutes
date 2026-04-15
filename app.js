@@ -208,6 +208,37 @@ function getTripStats(tripId) {
   };
 }
 
+function parseDurationToSeconds(duration) {
+  if (!duration) return 0;
+
+  const parts = duration.split(':').map(Number);
+
+  if (parts.length === 3) {
+    // hh:mm:ss
+    const [h, m, s] = parts;
+    return h * 3600 + m * 60 + s;
+  }
+
+  if (parts.length === 2) {
+    // mm:ss
+    const [m, s] = parts;
+    return m * 60 + s;
+  }
+
+  if (parts.length === 1) {
+    return parts[0]; // already seconds
+  }
+
+  return 0;
+}
+
+
+function formatDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
+  return `${minutes}m ${secs}s`;
+}
+
 function calculateAggregateStats() {
   if (!tripsMetadata) return null;
   
@@ -217,21 +248,20 @@ function calculateAggregateStats() {
     const stats = getTripStats(tripId);
     if (stats) {
       totalDistance += stats.distance;
-      const [part1, part2] = stats.duration.split(':').map(Number);
-      totalTime += (part1 * 60 + part2) * 60;
+      totalTime += parseDurationToSeconds(stats.duration);
       totalAvgSpeed += stats.avgSpeed;
       tripCount++;
     }
   });
   
   const avgSpeed = tripCount > 0 ? (totalAvgSpeed / tripCount) : 0;
-  return { tripCount, totalDistance: totalDistance.toFixed(1), totalTime: formatDuration(totalTime), avgSpeed: avgSpeed.toFixed(1) };
-}
 
-function formatDuration(seconds) {
-  const minutes = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
-  return `${minutes}m ${secs}s`;
+  return {
+    tripCount,
+    totalDistance: totalDistance.toFixed(1),
+    totalTime: formatDuration(totalTime),
+    avgSpeed: avgSpeed.toFixed(1)
+  };
 }
 
 // Trip selection functions
