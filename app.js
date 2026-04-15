@@ -537,10 +537,10 @@ window.addEventListener('resize', updateStatsVisibility);
 
 function updateLegendPositions() {
   const legendOrder = [
-    'averagedSegmentsLegend', // bottom (first in stacking)
+    'averagedSegmentsLegend',
     'speedLegend',
     'roadQualityLegend',
-    'sensorLegend' // top (last in stacking)
+    'sensorLegend'
   ];
 
   const visibleLegends = legendOrder
@@ -548,16 +548,21 @@ function updateLegendPositions() {
     .filter(el => el && el.style.display === 'block');
 
   const isMobile = window.matchMedia('(max-width: 768px)').matches;
-  
+
+  updateStatsVisibility(isMobile, visibleLegends);
+
   if (isMobile) {
     let cumulativeBottom = 10;
+
     visibleLegends.forEach(el => {
       el.style.right = '10px';
       el.style.bottom = `${cumulativeBottom}px`;
       cumulativeBottom += (el.offsetHeight || el.scrollHeight || 150) + 8;
     });
+
   } else {
     let cumulativeOffset = 10;
+
     visibleLegends.forEach(el => {
       el.style.bottom = '10px';
       el.style.right = `${cumulativeOffset}px`;
