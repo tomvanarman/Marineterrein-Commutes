@@ -311,20 +311,34 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
             return None, file_metadata
         
         # Step 3b: Drop the first 100m of the trip (privacy / identifiability)
+        # Updated Step 3b with safety and debugging
         TRIM_START_METRES = 100
         cumulative_distance = 0.0
         trim_index = 0
+        
         for k in range(1, len(points)):
-            cumulative_distance += haversine_distance(
+            dist = haversine_distance(
                 points[k-1]['lon'], points[k-1]['lat'],
                 points[k]['lon'],   points[k]['lat']
             )
+            
+            # If a single jump is > 500m, it's probably bad GPS data, ignore it
+            if dist > 500: 
+                continue
+                
+            cumulative_distance += dist
+            
             if cumulative_distance >= TRIM_START_METRES:
                 trim_index = k
                 break
+        
         if trim_index > 0:
-            points = points[trim_index:]
-            print(f"    ✂️  Trimmed first {TRIM_START_METRES}m ({trim_index} points dropped)")
+            # Logic check: If we only dropped 1-2 points, the '100m' was likely a GPS glitch
+            if trim_index < 3 and cumulative_distance > TRIM_START_METRES:
+                 print(f"    ⚠️  Possible GPS jump detected: {cumulative_distance:.1f}m in only {trim_index} points. Not trimming.")
+            else:
+                points = points[trim_index:]
+                print(f"    ✂️  Trimmed first {TRIM_START_METRES}m ({trim_index} points dropped)")
         
         if len(points) < 2:
             return None, file_metadata
