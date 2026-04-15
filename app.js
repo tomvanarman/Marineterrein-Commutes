@@ -547,8 +547,8 @@ function updateLegendPositions() {
     .map(id => document.getElementById(id))
     .filter(el => el && el.style.display === 'block');
 
-  const isMobile = window.innerWidth <= 768;
-
+  const isMobile = window.matchMedia('(max-width: 768px)').matches;
+  
   if (isMobile) {
     let cumulativeBottom = 10;
     visibleLegends.forEach(el => {
