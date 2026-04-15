@@ -311,20 +311,47 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
             return None, file_metadata
         
         # Step 3b: Drop the first 100m of the trip (privacy / identifiability)
-        TRIM_START_METRES = 100
-        cumulative_distance = 0.0
-        trim_index = 0
+        # Step 3b: Trim start and end (e.g., 100m for privacy)
+        TRIM_DISTANCE_METRES = 100
+        
+        # --- TRIM START ---
+        cumulative_start_dist = 0.0
+        start_trim_index = 0
         for k in range(1, len(points)):
-            cumulative_distance += haversine_distance(
+            dist = haversine_distance(
                 points[k-1]['lon'], points[k-1]['lat'],
                 points[k]['lon'],   points[k]['lat']
             )
-            if cumulative_distance >= TRIM_START_METRES:
-                trim_index = k
+            # Skip massive GPS jumps (e.g. > 500m) which mess up the count
+            if dist > 500: continue 
+            
+            cumulative_start_dist += dist
+            if cumulative_start_dist >= TRIM_DISTANCE_METRES:
+                start_trim_index = k
                 break
-        if trim_index > 0:
-            points = points[trim_index:]
-            print(f"    ✂️  Trimmed first {TRIM_START_METRES}m ({trim_index} points dropped)")
+
+        # --- TRIM END ---
+        cumulative_end_dist = 0.0
+        end_trim_index = len(points) - 1
+        for k in range(len(points) - 1, 0, -1):
+            dist = haversine_distance(
+                points[k]['lon'],   points[k]['lat'],
+                points[k-1]['lon'], points[k-1]['lat']
+            )
+            if dist > 500: continue
+            
+            cumulative_end_dist += dist
+            if cumulative_end_dist >= TRIM_DISTANCE_METRES:
+                end_trim_index = k
+                break
+
+        # Apply the trimming
+        if start_trim_index < end_trim_index:
+            points = points[start_trim_index:end_trim_index]
+            print(f"    ✂️  Trimmed: Start {TRIM_DISTANCE_METRES}m, End {TRIM_DISTANCE_METRES}m")
+            print(f"       Remaining points: {len(points)}")
+        else:
+            print("    ⚠️  Trip too short to trim both ends. Keeping original.")
         
         if len(points) < 2:
             return None, file_metadata
