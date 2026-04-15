@@ -53,6 +53,19 @@ body {
   color: var(--sc-text);
 }
 
+#controls img {
+  width: 100%;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  border: 1px solid var(--sc-panel-border);
+  opacity: 0.9;
+  transition: opacity 0.2s ease;
+}
+
+#controls img:hover {
+  opacity: 1;
+}
+
 h3 {
   margin: 0 0 15px 0;
   font-size: 17px;

@@ -519,15 +519,25 @@ map.on('load', async () => {
     setupClickHandlers();
     updateStatsFromMetadata();
     renderSensorLegend();
+    updateStatsVisibility();
 
   } catch (err) {
     console.error('❌ Error loading trips:', err);
   }
 });
 
+function updateStatsVisibility() {
+  const statsEl = document.getElementById('stats');
+  if (!statsEl) return;
+  const anyLegendActive = showSpeedColors || showRoadQuality || showAveragedSegments;
+  statsEl.style.display = window.innerWidth <= 768 && anyLegendActive ? 'none' : 'block';
+}
+
+window.addEventListener('resize', updateStatsVisibility);
+
 function updateLegendPositions() {
   const legendOrder = ['sensorLegend', 'speedLegend', 'roadQualityLegend', 'averagedSegmentsLegend'];
-
+  
   const visibleLegends = legendOrder
     .map(id => document.getElementById(id))
     .filter(el => el && el.style.display === 'block');
@@ -535,32 +545,19 @@ function updateLegendPositions() {
   const isMobile = window.innerWidth <= 768;
 
   if (isMobile) {
-    // Always stack vertically on mobile (portrait and landscape)
     let cumulativeBottom = 10;
     visibleLegends.forEach(el => {
       el.style.right = '10px';
       el.style.bottom = `${cumulativeBottom}px`;
       cumulativeBottom += (el.offsetHeight || el.scrollHeight || 150) + 8;
     });
-
-    // Push stats panel up so it clears the tallest legend stack
-    const statsEl = document.getElementById('stats');
-    if (statsEl) {
-      const requiredBottom = visibleLegends.length > 0 ? cumulativeBottom + 4 : 10;
-      statsEl.style.bottom = `${requiredBottom}px`;
-    }
   } else {
-    // Desktop: stack horizontally
     let cumulativeOffset = 10;
     visibleLegends.forEach(el => {
       el.style.bottom = '10px';
       el.style.right = `${cumulativeOffset}px`;
       cumulativeOffset += (el.offsetWidth || 220) + 10;
     });
-
-    // Reset stats to default on desktop
-    const statsEl = document.getElementById('stats');
-    if (statsEl) statsEl.style.bottom = '10px';
   }
 }
 
@@ -592,6 +589,8 @@ function setupAveragedSegmentControls() {
       }
       
       setTimeout(updateLegendPositions, 50);
+
+      updateStatsVisibility();
     });
   }
   
@@ -730,6 +729,8 @@ function setupControls() {
       }
       
       setTimeout(updateLegendPositions, 50);
+
+      updateStatsVisibility();
     });
   }
 
@@ -762,6 +763,8 @@ function setupControls() {
       }
       
       updateLegendPositions();
+
+      updateStatsVisibility();
     });
   }
 
