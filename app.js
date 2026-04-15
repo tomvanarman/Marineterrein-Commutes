@@ -44,6 +44,14 @@ const SENSOR_COLORS = [
   '#66FF99', // mint
   '#AA88FF', // lavender
   '#FF9966', // peach
+  '#00CCFF', // sky cyan
+  '#FFB3DE', // rose
+  '#44FFDD', // aqua
+  '#FFAA00', // deep amber
+  '#7BFFB3', // seafoam
+  '#FF6680', // coral
+  '#B3EEFF', // pale ice
+  '#D4FF66', // lime
 ];
 
 const DEFAULT_COLOR = '#34CCCC'; // fallback (sc-cyan)
