@@ -535,48 +535,39 @@ function updateStatsVisibility() {
 
 window.addEventListener('resize', updateStatsVisibility);
 
-function renderMobileLegends() {
-  if (!isMobile()) return;
-
-  const container = document.getElementById('mobileLegendContent');
-  if (!container) return;
-
-  container.innerHTML = '';
-
-  const legendIds = [
+function updateLegendPositions() {
+  const legendOrder = [
     'averagedSegmentsLegend',
     'speedLegend',
     'roadQualityLegend',
     'sensorLegend'
   ];
 
-  legendIds.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
+  const visibleLegends = legendOrder
+    .map(id => document.getElementById(id))
+    .filter(el => el && el.style.display === 'block');
 
-    if (el.style.display === 'none') return;
+  const isMobile = window.matchMedia('(max-width: 768px)').matches;
 
-    container.appendChild(el);
-  });
-}
+  updateStatsVisibility(isMobile, visibleLegends);
 
-function isMobile() {
-  return window.matchMedia('(max-width: 768px)').matches;
-}
+  if (isMobile) {
+    let cumulativeBottom = 10;
 
-function openLegendDrawer() {
-  document.getElementById('mobileLegendDrawer').classList.add('open');
-  renderMobileLegends();
-}
+    visibleLegends.forEach(el => {
+      el.style.right = '10px';
+      el.style.bottom = `${cumulativeBottom}px`;
+      cumulativeBottom += (el.offsetHeight || el.scrollHeight || 150) + 8;
+    });
 
-function closeLegendDrawer() {
-  document.getElementById('mobileLegendDrawer').classList.remove('open');
-}
+  } else {
+    let cumulativeOffset = 10;
 
-function updateLegendPositions() {
-  if (isMobile()) {
-    renderMobileLegends();
-    return;
+    visibleLegends.forEach(el => {
+      el.style.bottom = '10px';
+      el.style.right = `${cumulativeOffset}px`;
+      cumulativeOffset += (el.offsetWidth || 220) + 10;
+    });
   }
 }
 
@@ -607,9 +598,7 @@ function setupAveragedSegmentControls() {
         console.log('📊 Averaged segments OFF');
       }
       
-      setTimeout(() => {
-        if (isMobile()) renderMobileLegends();
-      }, 50);
+      setTimeout(updateLegendPositions, 50);
 
       updateStatsVisibility();
     });
@@ -749,9 +738,7 @@ function setupControls() {
         speedModeGroup.style.display = 'none';
       }
       
-      setTimeout(() => {
-        if (isMobile()) renderMobileLegends();
-      }, 50);
+      setTimeout(updateLegendPositions, 50);
 
       updateStatsVisibility();
     });
@@ -924,12 +911,6 @@ function updateStatsFromMetadata() {
     console.log(`📊 Actual trips loaded: ${actualTripCount}, Metadata trips: ${aggregateStats.tripCount}`);
   }
 }
-
-document.getElementById('legendToggleBtn')
-  .addEventListener('click', openLegendDrawer);
-
-document.getElementById('legendCloseBtn')
-  .addEventListener('click', closeLegendDrawer);
 
 // Render the sensor colour legend dynamically
 function renderSensorLegend() {
