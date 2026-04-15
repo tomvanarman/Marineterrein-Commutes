@@ -105,25 +105,6 @@
     </section>
 
   </div>
-  <div id="smappenOverlay" style="display:none;">
-    <div style="display: flex; flex-direction: column; align-items: center;">
-      <iframe title="Smappen - Shared map"
-        width="800"
-        height="500"
-        src="https://www.smappen.com/app/iframe/RR0aefWLxcAv3Vmh"
-        frameborder="0"
-        allowfullscreen>
-      </iframe>
-
-      <div style="text-align: center">
-        <i style="font-size: 0.6rem">
-          Map made using
-          <a href="https://www.smappen.com" target="_blank">smappen</a>
-        </i>
-      </div>
-    </div>
-  </div>
-    
 </div>
   
   <div id="map"></div>
@@ -189,13 +170,6 @@
       <label class="radio-label">
         <input type="radio" name="averagedMode" value="quality">
         Road Quality
-      </label>
-    </div>
-
-    <div class="control-group">
-      <label class="checkbox-label">
-        <input type="checkbox" id="smappenCheckbox">
-        Smappen Layer
       </label>
     </div>
 
@@ -436,17 +410,6 @@
   
   manualCloseBtn.addEventListener('click', () => {
     manualPanel.classList.remove('open');
-  });
-
-  const smappenCheckbox = document.getElementById('smappenCheckbox');
-  const smappenOverlay = document.getElementById('smappenOverlay');
-
-  smappenCheckbox.addEventListener('change', (e) => {
-    if (e.target.checked) {
-      smappenOverlay.style.display = 'block';
-    } else {
-      smappenOverlay.style.display = 'none';
-    }
   });
 
   // Handle legend switching for averaged segments

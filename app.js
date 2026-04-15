@@ -594,15 +594,16 @@ function updateLegendPositions() {
 
   updateStatsVisibility(isMobile, visibleLegends);
 
- if (isMobile) {
+  if (isMobile) {
+    let cumulativeBottom = 10;
+
     visibleLegends.forEach(el => {
-      el.style.position = 'relative';
-      el.style.right = 'auto';
-      el.style.bottom = 'auto';
-      el.style.marginBottom = '10px';
+      el.style.right = '10px';
+      el.style.bottom = `${cumulativeBottom}px`;
+      cumulativeBottom += (el.offsetHeight || el.scrollHeight || 150) + 8;
     });
-  }
-    else {
+
+  } else {
     let cumulativeOffset = 10;
 
     visibleLegends.forEach(el => {
