@@ -521,17 +521,15 @@ async function updateIsochrone(active) {
       },
       body: JSON.stringify({
         locations: [CONFIG.MAP_CENTER],
-        range: [300, 600],
+        range: [300, 600, 1800], // 5, 10, and 30 minutes
         range_type: 'time'
       })
     });
 
     const data = await response.json();
-
     map.addSource('isoSource', { type: 'geojson', data: data });
 
-    // Find a reference layer to go UNDER. 
-    // We try to find the first PMTile trip layer.
+    // Use tripLayers[0] as the reference to tuck it underneath your PMTiles
     const beforeId = (tripLayers && tripLayers.length > 0) ? tripLayers[0] : undefined;
 
     map.addLayer({
@@ -541,15 +539,16 @@ async function updateIsochrone(active) {
       paint: {
         'fill-color': [
           'interpolate', ['linear'], ['get', 'value'],
-          300, '#34CCCC', // Cyan
-          600, '#FFCC33'  // Gold
+          300, '#34CCCC',  // 5 min: Cyan (Dash Primary)
+          600, '#FFCC33',  // 10 min: Gold (Dash Secondary)
+          1800, '#FF4444'  // 30 min: Red (Alert/Long Range)
         ],
-        'fill-opacity': 0.2
+        'fill-opacity': 0.15 // Slightly lower opacity so 3 layers aren't too dark
       }
-    }, beforeId); // This replaces the problematic 'osm' string
+    }, beforeId);
 
   } catch (err) {
-    console.error("Isochrone error:", err);
+    console.error("Spatial Intelligence Error:", err);
   } finally {
     if (spinner) spinner.style.display = 'none';
   }
