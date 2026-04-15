@@ -664,4 +664,7 @@ input[type="range"] {
   #manualPanel {
     width: 100%;
   }
+  #stats {
+    transition: bottom 0.2s ease;
+  }
 }
