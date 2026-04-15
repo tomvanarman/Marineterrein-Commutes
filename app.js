@@ -612,6 +612,50 @@ map.on('load', async () => {
   } catch (err) {
     console.error('❌ Error loading trips:', err);
   }
+
+  // Add Marineterrein Boundary  
+  const marineterreinBoundary = [
+      [4.914554, 52.375853],
+      [4.913224, 52.374972],
+      [4.914403, 52.373225],
+      [4.915884, 52.373577],
+      [4.916600, 52.373163],
+      [4.915520, 52.372566],
+      [4.915402, 52.372642],
+      [4.914957, 52.372472],
+      [4.915706, 52.371622],
+      [4.917090, 52.372080],
+      [4.920670, 52.374342],
+      [4.920837, 52.374886],
+      [4.914554, 52.375853] 
+  ];
+
+  map.addSource('marineterrein-outline', {
+      'type': 'geojson',
+      'data': {
+          'type': 'Feature',
+          'geometry': {
+              'type': 'LineString',
+              'coordinates': marineterreinBoundary
+          }
+      }
+  });
+
+  map.addLayer({
+      'id': 'marineterrein-outline-layer',
+      'type': 'line',
+      'source': 'marineterrein-outline',
+      'layout': {
+          'line-join': 'round',
+          'line-cap': 'round'
+      },
+      'paint': {
+          'line-color': '#34CCCC', 
+          'line-width': 2,
+          'line-dasharray': [3, 2], 
+          'line-opacity': 0.8
+      }
+  });
 });
 
 function isFilteredMode() {
