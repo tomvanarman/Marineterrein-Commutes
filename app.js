@@ -520,7 +520,7 @@ async function updateIsochrone(active) {
         'Authorization': ORS_API_KEY
       },
       body: JSON.stringify({
-        locations: [CONFIG.MAP_CENTER], // Reusing your existing center from config.js
+        locations: [CONFIG.MAP_CENTER],
         range: [300, 600],
         range_type: 'time'
       })
@@ -530,6 +530,10 @@ async function updateIsochrone(active) {
 
     map.addSource('isoSource', { type: 'geojson', data: data });
 
+    // Find a reference layer to go UNDER. 
+    // We try to find the first PMTile trip layer.
+    const beforeId = (tripLayers && tripLayers.length > 0) ? tripLayers[0] : undefined;
+
     map.addLayer({
       id: 'isoLayer',
       type: 'fill',
@@ -537,12 +541,12 @@ async function updateIsochrone(active) {
       paint: {
         'fill-color': [
           'interpolate', ['linear'], ['get', 'value'],
-          300, '#34CCCC', // Matches your sc-cyan
-          600, '#FFCC33'  // Matches your sc-gold
+          300, '#34CCCC', // Cyan
+          600, '#FFCC33'  // Gold
         ],
         'fill-opacity': 0.2
       }
-    }, 'osm'); // Ensures it stays behind your trip layers
+    }, beforeId); // This replaces the problematic 'osm' string
 
   } catch (err) {
     console.error("Isochrone error:", err);
