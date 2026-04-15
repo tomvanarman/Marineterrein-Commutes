@@ -166,7 +166,10 @@ def main():
 
         for input_file in csv_files:
             file = os.path.basename(input_file)
-            sensor_id = file[:5]
+            # Support old format (602D3_…) and new format (DC8E95FFFE7602D3_20260409_…)
+            # Sensor ID is always the last 5 chars of the first underscore-delimited segment.
+            first_segment = file.split("_")[0]
+            sensor_id = first_segment[-5:]
 
             # Create output folder per sensor ID
             sensor_output = os.path.join(OUTPUT_ROOT, sensor_id)

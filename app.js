@@ -30,7 +30,40 @@ let showAveragedSegments = false;       // Toggle for averaged road segments lay
 let averagedSegmentMode = 'composite';  // 'speed', 'quality', or 'composite' for segment visualization
 let searchActive = false;               // True when a search filter is currently applied
 
-const DEFAULT_COLOR = '#FF6600';        
+// Sensor color palette — fits the cyan/gold dashboard scheme
+const SENSOR_COLORS = [
+  '#34CCCC', // sc-cyan
+  '#FFCC33', // sc-gold
+  '#5B8FFF', // electric blue
+  '#CC5BAA', // violet-magenta
+  '#33CCAA', // teal-green
+  '#FF7A3D', // amber-orange
+  '#88DDFF', // ice blue
+  '#FFE066', // soft gold
+  '#CC3355', // crimson
+  '#66FF99', // mint
+  '#AA88FF', // lavender
+  '#FF9966', // peach
+];
+
+const DEFAULT_COLOR = '#34CCCC'; // fallback (sc-cyan)
+
+// Map from sensor prefix → colour, built once trips are loaded
+const sensorColorMap = {};
+
+function buildSensorColorMap(layerIds) {
+  const sensors = [...new Set(layerIds.map(id => id.split('_')[0]))].sort();
+  sensors.forEach((sensor, i) => {
+    sensorColorMap[sensor] = SENSOR_COLORS[i % SENSOR_COLORS.length];
+  });
+  console.log('🎨 Sensor colour map:', sensorColorMap);
+}
+
+// Return the colour assigned to a layer based on its sensor prefix
+function getSensorColor(layerId) {
+  const sensor = layerId.split('_')[0];
+  return sensorColorMap[sensor] || DEFAULT_COLOR;
+}
 
 // Color expressions- Returns different colors based on different scores/values
 function getSpeedColorExpression(mode) {
@@ -214,7 +247,7 @@ function resetSelection() {
       } else if (showRoadQuality) {
         map.setPaintProperty(layerId, 'line-color', getRoadQualityColorExpression());
       } else {
-        map.setPaintProperty(layerId, 'line-color', DEFAULT_COLOR);
+        map.setPaintProperty(layerId, 'line-color', getSensorColor(layerId));
       }
     } catch (err) {
       console.error('Error resetting layer:', layerId, err);
@@ -254,7 +287,7 @@ function clearSearch() {
       } else if (showRoadQuality) {
         map.setPaintProperty(layerId, 'line-color', getRoadQualityColorExpression());
       } else {
-        map.setPaintProperty(layerId, 'line-color', DEFAULT_COLOR);
+        map.setPaintProperty(layerId, 'line-color', getSensorColor(layerId));
       }
     } catch (err) {
       console.error('Error clearing search on layer:', layerId, err);
@@ -453,14 +486,17 @@ map.on('load', async () => {
     // Add trips source
     map.addSource('trips', { type: 'vector', url: `pmtiles://${pmtilesUrl}`, attribution: 'Bike sensor data' });
     
-    // Add a layer for each trip
+    // Build sensor → colour mapping before adding layers
+    buildSensorColorMap(tripLayers);
+
+    // Add a layer for each trip, coloured by sensor
     tripLayers.forEach(layerId => {
       map.addLayer({
         id: layerId,
         type: 'line',
         source: 'trips',
         'source-layer': layerId,
-        paint: { 'line-color': DEFAULT_COLOR, 'line-width': 3, 'line-opacity': 0.7 }
+        paint: { 'line-color': getSensorColor(layerId), 'line-width': 3, 'line-opacity': 0.7 }
       });
     });
 
@@ -474,6 +510,7 @@ map.on('load', async () => {
     setupControls();
     setupClickHandlers();
     updateStatsFromMetadata();
+    renderSensorLegend();
 
   } catch (err) {
     console.error('❌ Error loading trips:', err);
@@ -482,6 +519,7 @@ map.on('load', async () => {
 
 function updateLegendPositions() {
   const legends = [
+    { id: 'sensorLegend', el: document.getElementById('sensorLegend') },
     { id: 'speedLegend', el: document.getElementById('speedLegend') },
     { id: 'roadQualityLegend', el: document.getElementById('roadQualityLegend') },
     { id: 'averagedSegmentsLegend', el: document.getElementById('averagedSegmentsLegend') }
@@ -509,6 +547,8 @@ function setupAveragedSegmentControls() {
         if (map.getLayer('averaged-segments')) map.setLayoutProperty('averaged-segments', 'visibility', 'visible');
         if (avgModeGroup) avgModeGroup.style.display = 'flex';
         if (avgLegend) avgLegend.style.display = 'block';
+        const sensorLegend = document.getElementById('sensorLegend');
+        if (sensorLegend) sensorLegend.style.display = 'none';
         updateAveragedSegmentColors();
         tripLayers.forEach(layerId => { map.setLayoutProperty(layerId, 'visibility', 'none'); });
         console.log('📊 Averaged segments ON');
@@ -516,6 +556,8 @@ function setupAveragedSegmentControls() {
         if (map.getLayer('averaged-segments')) map.setLayoutProperty('averaged-segments', 'visibility', 'none');
         if (avgModeGroup) avgModeGroup.style.display = 'none';
         if (avgLegend) avgLegend.style.display = 'none';
+        const sensorLegend = document.getElementById('sensorLegend');
+        if (sensorLegend) sensorLegend.style.display = 'block';
         tripLayers.forEach(layerId => { map.setLayoutProperty(layerId, 'visibility', 'visible'); });
         console.log('📊 Averaged segments OFF');
       }
@@ -653,7 +695,7 @@ function setupControls() {
         speedLegend.style.display = 'block';
         speedModeGroup.style.display = 'flex';
       } else {
-        tripLayers.forEach(layerId => { map.setPaintProperty(layerId, 'line-color', DEFAULT_COLOR); });
+        tripLayers.forEach(layerId => { map.setPaintProperty(layerId, 'line-color', getSensorColor(layerId)); });
         speedLegend.style.display = 'none';
         speedModeGroup.style.display = 'none';
       }
@@ -685,7 +727,7 @@ function setupControls() {
         roadQualityLegend.style.display = 'block';
       } else {
         tripLayers.forEach(layerId => {
-          map.setPaintProperty(layerId, 'line-color', DEFAULT_COLOR);
+          map.setPaintProperty(layerId, 'line-color', getSensorColor(layerId));
         });
         roadQualityLegend.style.display = 'none';
       }
@@ -826,6 +868,23 @@ function updateStatsFromMetadata() {
     console.log('✅ Stats updated from metadata:', aggregateStats);
     console.log(`📊 Actual trips loaded: ${actualTripCount}, Metadata trips: ${aggregateStats.tripCount}`);
   }
+}
+
+// Render the sensor colour legend dynamically
+function renderSensorLegend() {
+  const legend = document.getElementById('sensorLegend');
+  if (!legend) return;
+
+  const items = Object.entries(sensorColorMap).map(([sensor, color]) => `
+    <div class="speed-legend-item">
+      <div class="speed-color-box" style="background:${color};"></div>
+      <span>${sensor}</span>
+    </div>
+  `).join('');
+
+  legend.innerHTML = `<h4>Sensors</h4>${items}`;
+  legend.style.display = 'block';
+  updateLegendPositions();
 }
 
 // Make search function available globally for console testing
