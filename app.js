@@ -438,45 +438,14 @@ function searchAndHighlightTrip(searchTerm) {
 function updateAveragedSegmentColors() {
   if (!map.getLayer('averaged-segments')) return;
 
-  // Heatmap color ramps keyed by mode
-  const heatmapColors = {
-    speed: [
-      'interpolate', ['linear'], ['heatmap-density'],
-      0, 'rgba(220,38,38,0)',
-      0.2, '#DC2626',
-      0.4, '#F97316',
-      0.6, '#FACC15',
-      0.8, '#22C55E',
-      1,   '#6366F1'
-    ],
-    quality: [
-      'interpolate', ['linear'], ['heatmap-density'],
-      0, 'rgba(34,197,94,0)',
-      0.25, '#22C55E',
-      0.5,  '#FACC15',
-      0.75, '#F97316',
-      1,    '#DC2626'
-    ],
-    composite: [
-      'interpolate', ['linear'], ['heatmap-density'],
-      0, 'rgba(34,197,94,0)',
-      0.25, '#22C55E',
-      0.5,  '#FACC15',
-      0.75, '#F97316',
-      1,    '#DC2626'
-    ]
+  const colorExpressions = {
+    speed:     getAveragedSpeedColorExpression(),
+    quality:   getAveragedQualityColorExpression(),
+    composite: getCompositeScoreColorExpression()
   };
 
-  // Heatmap weight expressions (what drives intensity per point)
-  const heatmapWeights = {
-    speed:     ['interpolate', ['linear'], ['get', 'avg_speed'],    0, 0, 30, 1],
-    quality:   ['interpolate', ['linear'], ['get', 'avg_quality'],  1, 0,  5, 1],
-    composite: ['interpolate', ['linear'], ['get', 'composite_score'], 0, 0, 100, 1]
-  };
-
-  map.setPaintProperty('averaged-segments', 'heatmap-color',  heatmapColors[averagedSegmentMode]);
-  map.setPaintProperty('averaged-segments', 'heatmap-weight', heatmapWeights[averagedSegmentMode]);
-  console.log('🎨 Updated averaged segment heatmap to:', averagedSegmentMode);
+  map.setPaintProperty('averaged-segments', 'circle-color', colorExpressions[averagedSegmentMode]);
+  console.log('🎨 Updated averaged segment colors to:', averagedSegmentMode);
 }
 
 // Map layer setup
@@ -501,42 +470,27 @@ async function setupAveragedSegments() {
   // Add GeoJSON source (points)
   map.addSource('averaged-segments', { type: 'geojson', data: pointData });
 
-  // Heatmap layer (initially hidden)
+  // Blurred circle layer — each point colored by its actual metric value.
+  // circle-blur >= 1 makes the circles fade at edges, creating a soft
+  // glow effect while correctly encoding metric values per point.
   map.addLayer({
     id: 'averaged-segments',
-    type: 'heatmap',
-    source: 'averaged-segments',
-    layout: { 'visibility': 'none' },
-    paint: {
-      'heatmap-weight':    ['interpolate', ['linear'], ['get', 'composite_score'], 0, 0, 100, 1],
-      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 10, 1, 16, 3],
-      'heatmap-radius':    ['interpolate', ['linear'], ['zoom'], 10, 15, 14, 25, 16, 40],
-      'heatmap-opacity':   0.85,
-      'heatmap-color': [
-        'interpolate', ['linear'], ['heatmap-density'],
-        0,    'rgba(34,197,94,0)',
-        0.25, '#22C55E',
-        0.5,  '#FACC15',
-        0.75, '#F97316',
-        1,    '#DC2626'
-      ]
-    }
-  });
-
-  // Invisible circle layer on top for click/hover interactions
-  // (heatmap layers don't expose individual feature events)
-  map.addLayer({
-    id: 'averaged-segments-interact',
     type: 'circle',
     source: 'averaged-segments',
     layout: { 'visibility': 'none' },
-    paint: { 'circle-radius': 10, 'circle-opacity': 0, 'circle-stroke-width': 0 }
+    paint: {
+      'circle-color':   getCompositeScoreColorExpression(),
+      'circle-radius':  ['interpolate', ['linear'], ['zoom'], 10, 18, 13, 28, 16, 45],
+      'circle-blur':    1.2,
+      'circle-opacity': 0.6,
+      'circle-pitch-alignment': 'map'
+    }
   });
 
-  console.log('✅ Averaged segments heatmap layer added');
+  console.log('✅ Averaged segments layer added');
 
-  // Click handler on the invisible circle layer
-  map.on('click', 'averaged-segments-interact', (e) => {
+  // Click handler (circle layers support per-feature events directly)
+  map.on('click', 'averaged-segments', (e) => {
     e.preventDefault();
     if (e.originalEvent) e.originalEvent.stopPropagation();
 
@@ -558,9 +512,8 @@ async function setupAveragedSegments() {
     `).addTo(map);
   });
 
-  // Cursor changes on the interact layer
-  map.on('mouseenter', 'averaged-segments-interact', () => { map.getCanvas().style.cursor = 'pointer'; });
-  map.on('mouseleave', 'averaged-segments-interact', () => { map.getCanvas().style.cursor = ''; });
+  map.on('mouseenter', 'averaged-segments', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'averaged-segments', () => { map.getCanvas().style.cursor = ''; });
 }
 
 async function updateIsochrone(active) {
@@ -792,7 +745,7 @@ function setupAveragedSegmentControls() {
       
       if (showAveragedSegments) {
         if (map.getLayer('averaged-segments')) map.setLayoutProperty('averaged-segments', 'visibility', 'visible');
-        if (map.getLayer('averaged-segments-interact')) map.setLayoutProperty('averaged-segments-interact', 'visibility', 'visible');
+
         if (avgModeGroup) avgModeGroup.style.display = 'flex';
         if (avgLegend) avgLegend.style.display = 'block';
         const sensorLegend = document.getElementById('sensorLegend');
@@ -802,7 +755,7 @@ function setupAveragedSegmentControls() {
         console.log('📊 Averaged segments ON');
       } else {
         if (map.getLayer('averaged-segments')) map.setLayoutProperty('averaged-segments', 'visibility', 'none');
-        if (map.getLayer('averaged-segments-interact')) map.setLayoutProperty('averaged-segments-interact', 'visibility', 'none');
+
         if (avgModeGroup) avgModeGroup.style.display = 'none';
         if (avgLegend) avgLegend.style.display = 'none';
         const sensorLegend = document.getElementById('sensorLegend');
