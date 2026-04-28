@@ -32,6 +32,11 @@ def load_metadata():
             print(f"⚠️  Could not load metadata file: {e}")
     return {}
 
+def is_api_trip(trip_id, saved_metadata):
+    """Return True if this trip was fetched from the Supabase API."""
+    entry = saved_metadata.get(trip_id, {})
+    return entry.get("source") == "api"
+
 def parse_time(time_str, milliseconds):
     """Parse HH:mm:ss and SSS into datetime"""
     if not time_str or not milliseconds:
@@ -88,7 +93,6 @@ def extract_metadata_and_features(data):
     features = []
     metadata = {}
     
-    # Important metadata keys to keep
     important_keys = {
         'WheelDiam', 'Wheel mm', 'Frequency', 'GNSS', 'SENSOR',
         'Trip stop code', 'Trip start/end', 'Duration', 'Charge(start | stop)',
@@ -101,18 +105,14 @@ def extract_metadata_and_features(data):
         geom = feat.get("geometry", {})
         coords = geom.get("coordinates", None)
         
-        # Check if this is a metadata feature (no coordinates or empty coordinates)
         if coords is None or (isinstance(coords, list) and len(coords) == 0):
-            # This is metadata - only keep important keys
             props = feat.get("properties", {})
             for key, value in props.items():
-                # Keep only important metadata keys (skip sensor data rows)
                 if key in important_keys or (not key.startswith(',,') and len(key) < 100):
                     metadata[key] = value
         else:
             features.append(feat)
     
-    # Also check if metadata is in the top-level properties
     if not metadata and 'properties' in data:
         top_props = data.get('properties', {})
         for key, value in top_props.items():
@@ -125,34 +125,23 @@ def get_wheel_diameter(trip_id, file_metadata, saved_metadata):
     """Get wheel diameter from file metadata or saved metadata, in mm"""
     
     def parse_wheel_diameter(value):
-        """Parse wheel diameter from various formats"""
         if not value:
             return None
-        
-        # Handle string values like ", 26.0 inch" or "26.0 inch"
         if isinstance(value, str):
-            # Remove leading comma and whitespace
             value = value.strip(', ')
-            # Extract numeric part
             parts = value.split()
             if parts:
                 try:
                     diameter_inches = float(parts[0])
-                    # Convert inches to mm
-                    diameter_mm = diameter_inches * 25.4
-                    return diameter_mm
+                    return diameter_inches * 25.4
                 except (ValueError, IndexError):
                     pass
-        
-        # Handle numeric values (assume already in mm)
         try:
             return float(value)
         except (ValueError, TypeError):
             pass
-        
         return None
     
-    # First try: metadata from current file
     if file_metadata:
         wheel_value = file_metadata.get('WheelDiam') or file_metadata.get('Wheel mm')
         diameter = parse_wheel_diameter(wheel_value)
@@ -160,23 +149,17 @@ def get_wheel_diameter(trip_id, file_metadata, saved_metadata):
             print(f"    ✓ Using wheel diameter from file metadata: {diameter:.1f}mm")
             return diameter
     
-    # Second try: previously saved metadata for this trip
     if trip_id in saved_metadata:
         trip_meta = saved_metadata[trip_id]
-        # Check if it's nested or flat structure
         if isinstance(trip_meta, dict):
-            # Try direct keys first (flat structure)
             wheel_value = trip_meta.get('WheelDiam') or trip_meta.get('Wheel mm')
             if not wheel_value and 'metadata' in trip_meta:
-                # Try nested structure
                 wheel_value = trip_meta['metadata'].get('WheelDiam') or trip_meta['metadata'].get('Wheel mm')
-            
             diameter = parse_wheel_diameter(wheel_value)
             if diameter:
                 print(f"    ✓ Using wheel diameter from saved metadata: {diameter:.1f}mm")
                 return diameter
     
-    # Fallback to default
     print(f"    ⚠️  Wheel diameter not found, using default: {DEFAULT_WHEEL_DIAMETER_MM}mm")
     return DEFAULT_WHEEL_DIAMETER_MM
 
@@ -186,7 +169,6 @@ def extract_acceleration_data(features):
     
     for feature in features:
         props = feature.get('properties', {})
-        # Try different possible field names
         acc_y = (props.get('Acc Y (g)') or 
                  props.get('Acc Y') or 
                  props.get('AccY') or 
@@ -200,30 +182,29 @@ def extract_acceleration_data(features):
     return np.array(acc_y_values)
 
 def map_road_quality_to_segments(points, road_quality_data):
-    """
-    Map road quality scores to segments based on sample indices.
-    Each point has a 'samples' index, and road quality has 'time_windows' indices.
-    """
+    """Map road quality scores to segments based on sample indices."""
     if road_quality_data is None:
         return None
     
     quality_scores = road_quality_data['road_quality']
     time_windows = road_quality_data['time_windows']
     
-    # Create a lookup function
     def get_quality_at_sample(sample_idx):
-        """Find the road quality score for a given sample index"""
         if len(time_windows) == 0:
             return 0
-        
-        # Find the closest time window
         closest_idx = np.argmin(np.abs(time_windows - sample_idx))
         return int(quality_scores[closest_idx])
     
     return get_quality_at_sample
 
 def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
-    """Process a single GeoJSON file: clean, calculate speeds, add road quality"""
+    """Process a single GeoJSON file: clean, calculate speeds, add road quality.
+    
+    For API-sourced trips (source == 'api' in trips_metadata.json), speed is
+    taken directly from the 'Speed GPS' property (m/s → km/h) since wheel
+    rotation data (HRot) is not reliably available via the reconstruction query.
+    For local CSV trips, speed is calculated from wheel rotations as before.
+    """
     try:
         with open(filepath, 'r') as f:
             data = json.load(f)
@@ -231,13 +212,18 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         if 'features' not in data:
             return None, None
         
+        # Determine data source for this trip
+        use_gps_speed = is_api_trip(trip_id, saved_metadata)
+        if use_gps_speed:
+            print(f"    🌐 API trip — using GPS speed instead of wheel rotation")
+
         # Step 1: Extract features and metadata
         features, file_metadata = extract_metadata_and_features(data)
         
         if not features:
             return None, file_metadata
         
-        # Get wheel diameter from file or saved metadata
+        # Get wheel diameter (still needed for API trips for metadata consistency)
         wheel_diameter_mm = get_wheel_diameter(trip_id, file_metadata, saved_metadata)
         wheel_circumference_m = (wheel_diameter_mm / 1000) * math.pi
         
@@ -246,7 +232,7 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         acc_y_data = extract_acceleration_data(features)
         
         road_quality_data = None
-        if len(acc_y_data) > 200:  # Need enough data for analysis
+        if len(acc_y_data) > 200:
             try:
                 road_quality_data = calculate_road_quality(
                     acc_y_data, 
@@ -264,11 +250,10 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
             print(f"    Found {len(features)} features")
             print(f"    Acceleration data points: {len(acc_y_data)}")
             print(f"    Metadata keys: {list(file_metadata.keys()) if file_metadata else 'None'}")
-            
+            print(f"    Speed source: {'GPS (Speed GPS)' if use_gps_speed else 'Wheel rotation (HRot)'}")
             print(f"\n  DEBUG - Wheel configuration:")
             print(f"    Diameter: {wheel_diameter_mm}mm")
             print(f"    Circumference: {wheel_circumference_m:.3f}m")
-            
             if road_quality_data:
                 print(f"\n  DEBUG - Road quality:")
                 print(f"    Unique scores: {np.unique(road_quality_data['road_quality'])}")
@@ -290,6 +275,10 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
             
             samples_value = props.get('Samples', 0)
             samples_int = safe_int(samples_value, 0)
+
+            # Speed GPS is in m/s from the DB — convert to km/h here
+            raw_gps_speed = safe_float(props.get('Speed GPS'), 0.0)
+            gps_speed_kmh = raw_gps_speed * 3.6 if raw_gps_speed else 0.0
             
             points.append({
                 'lon': float(lon),
@@ -302,6 +291,7 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 'time_str': props.get('HH:mm:ss'),
                 'time_ms': props.get('SSS'),
                 'original_speed': props.get('Speed'),
+                'gps_speed_kmh': gps_speed_kmh,
                 'idx': idx
             })
         
@@ -310,11 +300,9 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         if len(points) < 2:
             return None, file_metadata
         
-        # Step 3b: Drop the first 100m of the trip (privacy / identifiability)
-        # Step 3b: Trim start and end (e.g., 100m for privacy)
+        # Step 3b: Drop the first and last 100m (privacy / identifiability)
         TRIM_DISTANCE_METRES = 100
         
-        # --- TRIM START ---
         cumulative_start_dist = 0.0
         start_trim_index = 0
         for k in range(1, len(points)):
@@ -322,15 +310,13 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 points[k-1]['lon'], points[k-1]['lat'],
                 points[k]['lon'],   points[k]['lat']
             )
-            # Skip massive GPS jumps (e.g. > 500m) which mess up the count
-            if dist > 500: continue 
-            
+            if dist > 500:
+                continue
             cumulative_start_dist += dist
             if cumulative_start_dist >= TRIM_DISTANCE_METRES:
                 start_trim_index = k
                 break
 
-        # --- TRIM END ---
         cumulative_end_dist = 0.0
         end_trim_index = len(points) - 1
         for k in range(len(points) - 1, 0, -1):
@@ -338,14 +324,13 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 points[k]['lon'],   points[k]['lat'],
                 points[k-1]['lon'], points[k-1]['lat']
             )
-            if dist > 500: continue
-            
+            if dist > 500:
+                continue
             cumulative_end_dist += dist
             if cumulative_end_dist >= TRIM_DISTANCE_METRES:
                 end_trim_index = k
                 break
 
-        # Apply the trimming
         if start_trim_index < end_trim_index:
             points = points[start_trim_index:end_trim_index]
             print(f"    ✂️  Trimmed: Start {TRIM_DISTANCE_METRES}m, End {TRIM_DISTANCE_METRES}m")
@@ -356,78 +341,44 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         if len(points) < 2:
             return None, file_metadata
 
-        # Step 4: Create road quality lookup function
+        # Step 4: Create road quality lookup
         quality_lookup = map_road_quality_to_segments(points, road_quality_data)
         
-        # Step 5: Calculate speeds and create line segments with road quality
+        # Step 5: Create line segments
         new_features = []
         
-        i = 0
-        while i < len(points) - 1:
-            start_point = points[i]
-            
-            # Find next point where HRot has changed (actual wheel movement)
-            j = i + 1
-            while j < len(points) and points[j]['hrot'] == start_point['hrot']:
-                j += 1
-            
-            if j >= len(points):
-                break
-            
-            end_point = points[j]
-            
-            # Prefer actual time difference if timestamps exist
-            if start_point['time'] and end_point['time']:
-                time_diff_seconds = (end_point['time'] - start_point['time']).total_seconds()
-            else:
-                sample_diff = end_point['samples'] - start_point['samples']
-                time_diff_seconds = sample_diff * SECONDS_PER_SAMPLE
-            
-            # Skip unrealistic or zero durations
-            if time_diff_seconds <= 0 or time_diff_seconds > 600:
-                i = j
-                continue
-            
-            # Calculate speed from wheel rotations
-            hrot_diff = end_point['hrot'] - start_point['hrot']
-            
-            if hrot_diff > 0 and time_diff_seconds > 0:
-                revolutions = hrot_diff / 2.0
-                distance_m = revolutions * wheel_circumference_m
-                speed_ms = distance_m / time_diff_seconds
-                speed_kmh = speed_ms * 3.6
-            else:
-                speed_kmh = 0
-            
-            gps_distance = haversine_distance(
-                start_point['lon'], start_point['lat'], 
-                end_point['lon'], end_point['lat']
-            )
-            
-            # Skip unrealistic GPS jumps
-            if gps_distance > 1000:
-                i = j
-                continue
-            
-            # Cap speed safely (40 km/h)
-            if speed_kmh > 40:
-                speed_kmh = 40
-            
-            # Get road quality for this segment (use midpoint sample index)
-            midpoint_sample = (start_point['samples'] + end_point['samples']) // 2
-            road_quality = quality_lookup(midpoint_sample) if quality_lookup else 0
-            
-            # Only create segments with movement and reasonable speeds
-            if (start_point['lon'] != end_point['lon'] or 
-                start_point['lat'] != end_point['lat']) and speed_kmh < 100:
-                
-                new_feature = {
+        if use_gps_speed:
+            # ── API path: one segment per consecutive point pair, GPS speed ──────
+            for i in range(len(points) - 1):
+                start_point = points[i]
+                end_point   = points[i + 1]
+
+                gps_distance = haversine_distance(
+                    start_point['lon'], start_point['lat'],
+                    end_point['lon'],   end_point['lat']
+                )
+
+                # Skip GPS jumps
+                if gps_distance > 1000:
+                    continue
+
+                # Average GPS speed of the two endpoints, capped at 40 km/h
+                speed_kmh = (start_point['gps_speed_kmh'] + end_point['gps_speed_kmh']) / 2
+                speed_kmh = min(speed_kmh, 40)
+
+                if start_point['lon'] == end_point['lon'] and start_point['lat'] == end_point['lat']:
+                    continue
+
+                midpoint_sample = (start_point['samples'] + end_point['samples']) // 2
+                road_quality = quality_lookup(midpoint_sample) if quality_lookup else 0
+
+                new_features.append({
                     'type': 'Feature',
                     'geometry': {
                         'type': 'LineString',
                         'coordinates': [
                             [start_point['lon'], start_point['lat']],
-                            [end_point['lon'], end_point['lat']]
+                            [end_point['lon'],   end_point['lat']]
                         ]
                     },
                     'properties': {
@@ -435,33 +386,102 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                         'road_quality': road_quality,
                         'marker': start_point['marker'],
                         'trip_id': trip_id,
-                        'hrot_diff': hrot_diff,
+                        'hrot_diff': 0,
                         'sample_diff': end_point['samples'] - start_point['samples'],
-                        'time_diff_s': round(time_diff_seconds, 3),
+                        'time_diff_s': None,
                         'gps_distance_m': round(gps_distance, 1),
                         'original_speed': start_point['original_speed'],
                         'wheel_diameter_mm': wheel_diameter_mm
                     }
-                }
-                new_features.append(new_feature)
-            
-            i = j
+                })
+
+        else:
+            # ── Local CSV path: wheel-rotation-based speed (original logic) ──────
+            i = 0
+            while i < len(points) - 1:
+                start_point = points[i]
+                
+                j = i + 1
+                while j < len(points) and points[j]['hrot'] == start_point['hrot']:
+                    j += 1
+                
+                if j >= len(points):
+                    break
+                
+                end_point = points[j]
+                
+                if start_point['time'] and end_point['time']:
+                    time_diff_seconds = (end_point['time'] - start_point['time']).total_seconds()
+                else:
+                    sample_diff = end_point['samples'] - start_point['samples']
+                    time_diff_seconds = sample_diff * SECONDS_PER_SAMPLE
+                
+                if time_diff_seconds <= 0 or time_diff_seconds > 600:
+                    i = j
+                    continue
+                
+                hrot_diff = end_point['hrot'] - start_point['hrot']
+                
+                if hrot_diff > 0 and time_diff_seconds > 0:
+                    revolutions = hrot_diff / 2.0
+                    distance_m = revolutions * wheel_circumference_m
+                    speed_ms = distance_m / time_diff_seconds
+                    speed_kmh = speed_ms * 3.6
+                else:
+                    speed_kmh = 0
+                
+                gps_distance = haversine_distance(
+                    start_point['lon'], start_point['lat'], 
+                    end_point['lon'], end_point['lat']
+                )
+                
+                if gps_distance > 1000:
+                    i = j
+                    continue
+                
+                if speed_kmh > 40:
+                    speed_kmh = 40
+                
+                midpoint_sample = (start_point['samples'] + end_point['samples']) // 2
+                road_quality = quality_lookup(midpoint_sample) if quality_lookup else 0
+                
+                if (start_point['lon'] != end_point['lon'] or 
+                    start_point['lat'] != end_point['lat']) and speed_kmh < 100:
+                    
+                    new_features.append({
+                        'type': 'Feature',
+                        'geometry': {
+                            'type': 'LineString',
+                            'coordinates': [
+                                [start_point['lon'], start_point['lat']],
+                                [end_point['lon'], end_point['lat']]
+                            ]
+                        },
+                        'properties': {
+                            'Speed': round(speed_kmh, 1),
+                            'road_quality': road_quality,
+                            'marker': start_point['marker'],
+                            'trip_id': trip_id,
+                            'hrot_diff': hrot_diff,
+                            'sample_diff': end_point['samples'] - start_point['samples'],
+                            'time_diff_s': round(time_diff_seconds, 3),
+                            'gps_distance_m': round(gps_distance, 1),
+                            'original_speed': start_point['original_speed'],
+                            'wheel_diameter_mm': wheel_diameter_mm
+                        }
+                    })
+                
+                i = j
         
         if not new_features:
             return None, file_metadata
         
-        # Print road quality stats for this trip
         if quality_lookup:
             qualities = [f['properties']['road_quality'] for f in new_features]
             quality_counts = np.bincount(qualities, minlength=6)[1:]
             print(f"    📊 Road quality distribution: {dict(enumerate(quality_counts, 1))}")
         
-        processed_data = {
-            'type': 'FeatureCollection',
-            'features': new_features
-        }
-        
-        return processed_data, file_metadata
+        return {'type': 'FeatureCollection', 'features': new_features}, file_metadata
     
     except Exception as e:
         import traceback
@@ -481,7 +501,6 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
         print(f"❌ Directory not found: {input_dir}")
         return
     
-    # Load existing metadata (DO NOT overwrite - csv_to_geojson owns this file!)
     saved_metadata = load_metadata()
     
     print("\n🚴 Processing Bike Trip Data with Road Quality")
@@ -497,7 +516,6 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
     failed_files = 0
     total_segments = 0
     
-    # Process each sensor folder
     for folder in sorted(input_path.iterdir()):
         if not folder.is_dir():
             continue
@@ -505,17 +523,14 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
         sensor_id = folder.name
         print(f"Processing sensor {sensor_id}...")
         
-        # Find all _clean.geojson files
         geojson_files = list(folder.glob("*_clean.geojson"))
         
         for idx, geojson_file in enumerate(geojson_files):
             total_files += 1
             
-            # Parse filename to get trip ID
-            filename = geojson_file.stem  # e.g., "602B3_Trip1_clean"
-            trip_id = filename.replace("_clean", "")  # e.g., "602B3_Trip1"
+            filename = geojson_file.stem
+            trip_id = filename.replace("_clean", "")
             
-            # Check if this trip should be skipped
             serial = trip_id.split("_")[0]
             trip = "_".join(trip_id.split("_")[1:])
             
@@ -524,7 +539,6 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
                 skipped_files += 1
                 continue
             
-            # Check if already processed
             sensor_output_dir = output_path / sensor_id
             output_file = sensor_output_dir / f"{trip_id}_processed.geojson"
             
@@ -535,16 +549,13 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
             
             print(f"  🔄 Processing {trip_id}...")
             
-            # Enable debug for first file only
             debug = (idx == 0 and processed_files == 0)
             
-            # Process the file
             processed_data, metadata = process_geojson_file(
                 geojson_file, trip_id, saved_metadata, debug=debug
             )
             
             if processed_data:
-                # Save processed file in sensor subfolder
                 sensor_output_dir.mkdir(exist_ok=True)
                 
                 with open(output_file, 'w') as f:
@@ -560,11 +571,6 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
         
         print(f"  ✅ Sensor complete\n")
     
-    
-    # Don't save metadata - just preserve what exists from CSV converter
-    # Metadata file should only be modified by csv_to_geojson_converter
-    
-    # Summary
     print("=" * 60)
     print(f"✅ Processing complete!")
     print(f"   Total _clean files found: {total_files}")
@@ -578,11 +584,9 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
     if saved_metadata:
         print(f"   Metadata preserved: {len(saved_metadata)} trips")
     
-    # Calculate speed and road quality statistics
     all_speeds = []
     all_qualities = []
     
-    # Walk through sensor subfolders
     for sensor_folder in output_path.iterdir():
         if not sensor_folder.is_dir():
             continue
@@ -591,10 +595,9 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
             try:
                 with open(processed_file, 'r') as f:
                     data = json.load(f)
-                    for f in data['features']:
-                        speed = f['properties'].get('Speed', 0)
-                        quality = f['properties'].get('road_quality', 0)
-                        
+                    for feat in data['features']:
+                        speed = feat['properties'].get('Speed', 0)
+                        quality = feat['properties'].get('road_quality', 0)
                         if speed > 0:
                             all_speeds.append(speed)
                         if quality > 0:
@@ -620,14 +623,7 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
 if __name__ == "__main__":
     import sys
     
-    if len(sys.argv) >= 2:
-        input_dir = sys.argv[1]
-    else:
-        input_dir = INPUT_ROOT
-    
-    if len(sys.argv) >= 3:
-        output_dir = sys.argv[2]
-    else:
-        output_dir = OUTPUT_ROOT
+    input_dir  = sys.argv[1] if len(sys.argv) >= 2 else INPUT_ROOT
+    output_dir = sys.argv[2] if len(sys.argv) >= 3 else OUTPUT_ROOT
     
     process_all_trips(input_dir, output_dir)

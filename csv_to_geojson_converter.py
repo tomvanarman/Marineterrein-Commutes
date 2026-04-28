@@ -2,8 +2,10 @@ import csv
 import json
 import os
 import re
-import io
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 INPUT_ROOT = "csv_data"       # where CSVs live
 OUTPUT_ROOT = "sensor_data"   # where cleaned GeoJSONs + metadata go
@@ -12,12 +14,12 @@ OUTPUT_ROOT = "sensor_data"   # where cleaned GeoJSONs + metadata go
 MAX_BIKE_SPEED_KMH = 60       # hard cap — anything above this is physically implausible
 MAX_NEIGHBOUR_RATIO = 2.5     # a point is a spike if it's >2.5x both its neighbours
 
-# Supabase connection details
-SUPABASE_HOST     = "aws-1-eu-west-1.pooler.supabase.com"
-SUPABASE_PORT     = 6543
-SUPABASE_DB       = "postgres"
-SUPABASE_USER     = "read_only_amsterdam.wnqwrspppcmjhpjctheg"
-SUPABASE_PASSWORD = "CHAADRgvds45%^#f"
+# Supabase connection details — loaded from .env
+SUPABASE_HOST     = os.getenv("SUPABASE_HOST")
+SUPABASE_PORT     = int(os.getenv("SUPABASE_PORT", 6543))
+SUPABASE_DB       = os.getenv("SUPABASE_DB")
+SUPABASE_USER     = os.getenv("SUPABASE_USER")
+SUPABASE_PASSWORD = os.getenv("SUPABASE_PASSWORD")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Supabase fetch
