@@ -1,19 +1,9 @@
-# .github/workflows/generate-trips.yml
-#
-# Connects to Supabase via direct Postgres credentials, reconstructs all trips,
-# writes trips.geojson, and commits it so GitHub Pages can serve it statically.
-#
-# Required GitHub Secrets (Settings → Secrets → Actions):
-#   SUPABASE_HOST, SUPABASE_PORT, SUPABASE_DB, SUPABASE_USER, SUPABASE_PASSWORD
-#
-# Trigger: every 6 hours + manual dispatch
-
 name: Generate trips GeoJSON
 
 on:
   schedule:
-    - cron: '0 */6 * * *'   # every 6 hours — adjust as needed
-  workflow_dispatch:          # allows manual trigger from Actions tab
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 jobs:
   generate:
@@ -22,6 +12,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 🔥 added
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,7 +36,13 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add trips.geojson
+
           # Only commit if trips.geojson actually changed
           git diff --cached --quiet || git commit -m "chore: regenerate trips.geojson [skip ci]"
+
+          # 🔥 added: sync with remote before pushing
+          git pull --rebase origin main
+
           git push
