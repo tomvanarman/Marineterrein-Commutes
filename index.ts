@@ -2,8 +2,8 @@
 // Deploy with: supabase functions deploy trips-geojson
 //
 // Returns processed trip data as GeoJSON FeatureCollection.
-// Queries gnss + raw_data + data1 tables, reconstructs per-sample rows,
-// and returns line segments with Speed (GPS), Acc Y, marker, trip_id.
+// All reconstruction is done inline via raw SQL — no DB function or migration needed.
+// Reads from: gnss, raw_data, data1, trips (read-only).
 //
 // Query params:
 //   ?trip_id=123          — single trip (optional)
@@ -12,14 +12,21 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Pool } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Reconstruction query — same logic as the Python pipeline but returns
-// one row per decoded accelerometer sample with matched GNSS position.
+// ─── Inline reconstruction query ─────────────────────────────────────────────
+// This replicates what the Python pipeline does:
+//   1. Find start/end sample bounds from data1 (marker 9 = start, 10 = end)
+//   2. Decode raw_data blobs → 10 accelerometer samples per row
+//   3. Match each sample to the nearest GNSS point by timestamp
+//   4. Return one row per sample with lat/lng, speed, acc_y, marker
+//
+// $1 = trip_id (integer)
 const RECONSTRUCTION_QUERY = `
 with params as (
     select $1::int as trip_id
@@ -98,9 +105,7 @@ where g.latitude is not null and g.longitude is not null
 order by b.output_samples;
 `;
 
-// Convert rows for one trip into GeoJSON line segment features.
-// Each consecutive pair of points becomes a LineString feature.
-// Speed is averaged from GPS speed of both endpoints (m/s → km/h, capped 40).
+// ─── GeoJSON conversion ───────────────────────────────────────────────────────
 function rowsToFeatures(rows: any[], tripId: string, dbTripId: number) {
   const features = [];
   const MAX_GPS_JUMP_M = 1000;
@@ -155,9 +160,7 @@ function rowsToFeatures(rows: any[], tripId: string, dbTripId: number) {
         Speed: Math.round(speed * 10) / 10,
         marker: a.marker ?? 0,
         "Acc Y (g)": parseFloat(a.acc_y) || 0,
-        // road_quality is not available server-side (needs accelerometer
-        // windowed analysis); set to 0 and compute client-side if needed.
-        road_quality: 0,
+        road_quality: 0, // computed client-side if needed
       },
     });
   }
@@ -177,81 +180,76 @@ function haversine(a: any, b: any): number {
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
+// ─── Main handler ─────────────────────────────────────────────────────────────
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS_HEADERS });
   }
 
+  // Create a Postgres pool using the direct DB URL (set automatically by Supabase
+  // for Edge Functions — no env var you need to add).
+  // SUPABASE_DB_URL format: postgres://postgres:password@host:5432/postgres
+  const pool = new Pool(Deno.env.get("SUPABASE_DB_URL")!, 3, true);
+
   try {
     const url = new URL(req.url);
     const singleTripId = url.searchParams.get("trip_id");
     const since = url.searchParams.get("since");
-    const limit = parseInt(url.searchParams.get("limit") || "100");
+    const limit = Math.min(parseInt(url.searchParams.get("limit") || "100"), 500);
 
+    // ── 1. Fetch trip list via Supabase JS (convenient filter API) ──────────
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // 1. Fetch matching trips from the trips table
     let tripsQuery = supabase
       .from("trips")
       .select("id, trip_start, trip_end, system_id")
       .order("trip_start", { ascending: false })
       .limit(limit);
 
-    if (singleTripId) {
-      tripsQuery = tripsQuery.eq("id", parseInt(singleTripId));
-    }
-    if (since) {
-      tripsQuery = tripsQuery.gte("trip_start", since);
-    }
+    if (singleTripId) tripsQuery = tripsQuery.eq("id", parseInt(singleTripId));
+    if (since)        tripsQuery = tripsQuery.gte("trip_start", since);
 
     const { data: trips, error: tripsError } = await tripsQuery;
     if (tripsError) throw tripsError;
+    if (!trips || trips.length === 0) {
+      return new Response(
+        JSON.stringify({ type: "FeatureCollection", features: [] }),
+        { headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
+    }
 
-    // 2. For each trip, reconstruct rows and convert to GeoJSON features
-    const allFeatures = [];
+    // ── 2. Reconstruct each trip using raw SQL via the pg connection ────────
+    const conn = await pool.connect();
+    const allFeatures: any[] = [];
 
-    for (const trip of trips ?? []) {
-      // Derive the same sensor slug used by the pipeline (last 5 hex chars)
-      const systemId = BigInt.asUintN(64, BigInt(trip.system_id));
-      const hexSlug = systemId.toString(16).toUpperCase().slice(-5);
-      // Count existing trips for this sensor to assign trip number
-      // (approximate — use db trip id as stable identifier in trip_id string)
-      const tripId = `${hexSlug}_Trip${trip.id}`;
+    try {
+      for (const trip of trips) {
+        const systemId = BigInt.asUintN(64, BigInt(trip.system_id));
+        const hexSlug = systemId.toString(16).toUpperCase().slice(-5);
+        const tripId = `${hexSlug}_Trip${trip.id}`;
 
-      try {
-        const { data: rows, error: rowsError } = await supabase.rpc(
-          "reconstruct_trip_rows",
-          { p_trip_id: trip.id }
-        ).select();
+        try {
+          const result = await conn.queryObject(RECONSTRUCTION_QUERY, [trip.id]);
+          const rows = result.rows;
 
-        // Fall back to raw SQL if the RPC doesn't exist yet
-        let sampleRows = rows;
-        if (rowsError || !rows) {
-          const { data: sqlRows, error: sqlError } = await supabase
-            .from("raw_data")
-            .select("*")
-            .eq("trip_id", trip.id)
-            .limit(1);
-
-          if (sqlError) {
-            console.error(`Trip ${trip.id} raw_data error:`, sqlError);
+          if (!rows || rows.length === 0) {
+            console.warn(`Trip ${trip.id}: no rows reconstructed`);
             continue;
           }
 
-          // Use the direct SQL reconstruction query via pg REST isn't possible
-          // without rpc; skip trips that need reconstruction if no rpc available.
-          console.warn(`Trip ${trip.id}: no RPC available, skipping reconstruction`);
-          continue;
+          const features = rowsToFeatures(rows, tripId, trip.id);
+          allFeatures.push(...features);
+          console.log(`✅ Trip ${trip.id} (${tripId}): ${rows.length} samples → ${features.length} segments`);
+        } catch (err) {
+          // Log and continue — one bad trip shouldn't break the whole response
+          console.error(`❌ Trip ${trip.id} reconstruction failed:`, err);
         }
-
-        const features = rowsToFeatures(sampleRows, tripId, trip.id);
-        allFeatures.push(...features);
-      } catch (err) {
-        console.error(`Error processing trip ${trip.id}:`, err);
       }
+    } finally {
+      conn.release();
     }
 
     const geojson = {
@@ -263,14 +261,17 @@ serve(async (req) => {
       headers: {
         ...CORS_HEADERS,
         "Content-Type": "application/json",
-        "Cache-Control": "public, max-age=300", // 5 min cache
+        "Cache-Control": "public, max-age=300",
       },
     });
+
   } catch (err) {
     console.error("Edge function error:", err);
     return new Response(JSON.stringify({ error: String(err) }), {
       status: 500,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
+  } finally {
+    await pool.end();
   }
 });

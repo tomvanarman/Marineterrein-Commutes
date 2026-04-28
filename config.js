@@ -1,17 +1,18 @@
 // config.js
 export const CONFIG = {
   MAP_STYLE: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-  MAP_CENTER: [4.9041, 52.3676], // Amsterdam
+  MAP_CENTER: [4.9041, 52.3676],
   MAP_ZOOM: 13,
 
-  // Supabase Edge Function — serves live GeoJSON, no PMTiles needed
-  // Replace <PROJECT_REF> with your Supabase project ref
-  TRIPS_API_URL: 'https://<PROJECT_REF>.supabase.co/functions/v1/trips-geojson',
+  // Static file written by the GitHub Action and served by GitHub Pages.
+  // No Supabase Edge Function needed — just a file committed to the repo root.
+  TRIPS_GEOJSON_URL: './trips.geojson',
 
-  // Optional: load only trips from the last N days on startup (keeps initial load fast)
+  // Match the INITIAL_DAYS in generate_trips_geojson.py so the
+  // client-side filter aligns with what's actually in the file.
   INITIAL_DAYS: 90,
 
-  DATA_URL: './'
+  DATA_URL: './',
 };
 
 window.CONFIG = CONFIG;
