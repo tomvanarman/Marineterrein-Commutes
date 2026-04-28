@@ -244,8 +244,14 @@ serve(async (req) => {
           allFeatures.push(...features);
           console.log(`✅ Trip ${trip.id} (${tripId}): ${rows.length} samples → ${features.length} segments`);
         } catch (err) {
-          // Log and continue — one bad trip shouldn't break the whole response
           console.error(`❌ Trip ${trip.id} reconstruction failed:`, err);
+
+          // 🔥 Reset connection so next query works
+          try {
+            await conn.queryArray("ROLLBACK");
+          } catch (rollbackErr) {
+            console.error("Rollback failed:", rollbackErr);
+          }
         }
       }
     } finally {
