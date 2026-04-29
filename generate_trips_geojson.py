@@ -63,11 +63,13 @@ def get_connection():
 # ── Trip list ─────────────────────────────────────────────────────────────────
 
 TRIPS_QUERY = """
-select id, trip_start, trip_end, system_id
+select id, trip_start, trip_end, system_id, wheel_diam
 from public.trips
 {where}
 order by trip_start desc
 """
+
+DEFAULT_WHEEL_DIAM_INCH = 28.0  # fallback if not in DB
 
 def fetch_trips(cur):
     where = ""
@@ -99,7 +101,9 @@ x as (
         rd.samples as raw_samples,
         rd.samples - 9 + gs.i as output_samples,
         trim(vals[gs.i * 4 + 1])::integer as acc_low,
-        trim(vals[gs.i * 4 + 2])::integer as acc_high
+        trim(vals[gs.i * 4 + 2])::integer as acc_high,
+        trim(vals[gs.i * 4 + 3])::integer as hrot_low,
+        trim(vals[gs.i * 4 + 4])::integer as hrot_high
     from (
         select rd.trip_id, rd.samples,
                string_to_array(
@@ -134,7 +138,6 @@ base as (
 select
     g.latitude,
     g.longitude,
-    g.speed    as speed_gps,
     b.marker,
     b.output_samples as samples,
     round((
@@ -143,7 +146,8 @@ select
                 then (b.acc_low + b.acc_high * 256) - 65536
             else (b.acc_low + b.acc_high * 256)
         end
-    ) / 1024.0, 3) as acc_y
+    ) / 1024.0, 3) as acc_y,
+    (b.hrot_low + b.hrot_high * 256) as h_rot
 from base b
 left join lateral (
     select g.latitude, g.longitude, g.speed
@@ -224,30 +228,67 @@ def compute_road_quality_lookup(rows):
     return lookup
 
 
-def rows_to_features(rows, trip_id, db_trip_id):
+SAMPLE_RATE_HZ = 50
+SECONDS_PER_SAMPLE = 1 / SAMPLE_RATE_HZ  # 0.02s
+
+def rows_to_features(rows, trip_id, db_trip_id, wheel_diam_mm):
     features = []
     trimmed  = privacy_trim(rows)
 
     # Build road quality lookup from the full (untrimmed) acc_y series
-    # so the windowed analysis has maximum context.
     quality_lookup = compute_road_quality_lookup(rows)
 
-    for i in range(len(trimmed) - 1):
-        a, b = trimmed[i], trimmed[i + 1]
-        if not all([a["latitude"], a["longitude"], b["latitude"], b["longitude"]]):
+    wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi
+
+    # Walk trimmed points using the same hrot-diff logic as integrated_processor.py:
+    # advance until h_rot changes, calculate speed from rotations / time.
+    i = 0
+    while i < len(trimmed) - 1:
+        a = trimmed[i]
+
+        if not all([a["latitude"], a["longitude"]]):
+            i += 1
             continue
+
+        # Find next point where h_rot has changed
+        j = i + 1
+        while j < len(trimmed) and trimmed[j]["h_rot"] == a["h_rot"]:
+            j += 1
+
+        if j >= len(trimmed):
+            break
+
+        b = trimmed[j]
+
+        if not all([b["latitude"], b["longitude"]]):
+            i = j
+            continue
+
         dist = haversine(a, b)
         if dist > MAX_GPS_JUMP_M:
+            i = j
             continue
         if a["longitude"] == b["longitude"] and a["latitude"] == b["latitude"]:
+            i = j
             continue
 
-        speed_a = float(a["speed_gps"] or 0) * 3.6
-        speed_b = float(b["speed_gps"] or 0) * 3.6
-        speed   = min((speed_a + speed_b) / 2, MAX_SPEED_KMH)
+        # Time difference from sample index
+        sample_diff = int(b["samples"] or 0) - int(a["samples"] or 0)
+        time_diff_s = sample_diff * SECONDS_PER_SAMPLE
+        if time_diff_s <= 0 or time_diff_s > 600:
+            i = j
+            continue
 
-        # Use midpoint sample index for road quality lookup
-        mid_sample = (int(a["samples"] or 0) + int(b["samples"] or 0)) // 2
+        # Wheel-rotation speed (same formula as integrated_processor.py)
+        hrot_diff = int(b["h_rot"] or 0) - int(a["h_rot"] or 0)
+        if hrot_diff > 0:
+            revolutions = hrot_diff / 2.0
+            distance_m  = revolutions * wheel_circumference_m
+            speed_kmh   = min((distance_m / time_diff_s) * 3.6, MAX_SPEED_KMH)
+        else:
+            speed_kmh = 0
+
+        mid_sample   = (int(a["samples"] or 0) + int(b["samples"] or 0)) // 2
         road_quality = quality_lookup(mid_sample) if quality_lookup else 0
 
         features.append({
@@ -262,12 +303,14 @@ def rows_to_features(rows, trip_id, db_trip_id):
             "properties": {
                 "trip_id":      trip_id,
                 "db_trip_id":   db_trip_id,
-                "Speed":        round(speed, 1),
+                "Speed":        round(speed_kmh, 1),
                 "marker":       a["marker"] or 0,
                 "Acc Y (g)":    float(a["acc_y"] or 0),
                 "road_quality": road_quality,
             },
         })
+
+        i = j
     return features
 
 def make_trip_id(system_id, db_trip_id):
@@ -320,8 +363,14 @@ def load_remote_trips(existing_trip_ids):
     print(f"📋 Found {len(trips)} trips in Supabase")
 
     for trip_row in trips:
-        db_id, trip_start, trip_end, system_id = trip_row
+        db_id, trip_start, trip_end, system_id, wheel_diam = trip_row
         trip_id = make_trip_id(system_id, db_id)
+
+        # Convert wheel diameter: DB stores inches, we need mm
+        try:
+            wheel_diam_mm = float(wheel_diam) * 25.4 if wheel_diam else DEFAULT_WHEEL_DIAM_INCH * 25.4
+        except (TypeError, ValueError):
+            wheel_diam_mm = DEFAULT_WHEEL_DIAM_INCH * 25.4
 
         if trip_id in existing_trip_ids:
             print(f"  ⏭️  {trip_id} already in local files — skipping")
@@ -333,7 +382,7 @@ def load_remote_trips(existing_trip_ids):
                 print(f"  ⚠️  Trip {db_id} ({trip_id}): no rows — skipping")
                 continue
             dicts    = rows_to_dicts(rows, cols)
-            new_feats = rows_to_features(dicts, trip_id, db_id)
+            new_feats = rows_to_features(dicts, trip_id, db_id, wheel_diam_mm)
             features.extend(new_feats)
             print(f"  ✅ {trip_id}: {len(rows)} samples → {len(new_feats)} segments")
         except Exception as e:
