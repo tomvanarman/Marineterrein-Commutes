@@ -2,44 +2,63 @@
 """
 generate_trips_geojson.py
 
-Connects to Supabase via direct Postgres credentials, reconstructs every trip
-using the same CTE logic as the pipeline, and writes trips.geojson.
+Builds trips.geojson by merging two sources:
+  1. Existing processed_sensor_data/ files (real road quality + wheel speed)
+  2. New trips fetched from Supabase (GPS speed + road quality from accelerometer)
 
-Run locally:  python generate_trips_geojson.py
-Run via CI:   env vars are injected by the GitHub Actions workflow.
+Local processed files take priority — if a trip_id exists in both,
+the local version wins (it has better wheel-rotation speed data).
+Supabase trips get road quality calculated on the fly from acc_y data
+using the same road_quality_calculator.py module as the main pipeline.
+
+Run: python generate_trips_geojson.py
 """
 
 import json
 import math
 import os
 import sys
+from pathlib import Path
 
+import numpy as np
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Import road quality calculator (same module used by integrated_processor.py)
+try:
+    from road_quality_calculator import calculate_road_quality
+    ROAD_QUALITY_AVAILABLE = True
+except ImportError:
+    print("⚠️  road_quality_calculator.py not found — road_quality will be 0")
+    ROAD_QUALITY_AVAILABLE = False
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
-OUTPUT_FILE    = "trips.geojson"
-MAX_SPEED_KMH  = 40
-MAX_GPS_JUMP_M = 1000
-TRIM_M         = 100          # privacy trim: drop first/last ~100 m
-INITIAL_DAYS   = 90           # only export trips from the last N days (set None for all)
+OUTPUT_FILE           = "trips.geojson"
+PROCESSED_ROOT        = Path("processed_sensor_data")
+MAX_SPEED_KMH         = 40
+MAX_GPS_JUMP_M        = 1000
+TRIM_M                = 100
+INITIAL_DAYS          = None      # None = all trips; set e.g. 90 to limit
+STATEMENT_TIMEOUT     = "30s"
 
 # ── DB connection ─────────────────────────────────────────────────────────────
 
 def get_connection():
-    return psycopg2.connect(
-        host     = os.environ["SUPABASE_HOST"],
-        port     = int(os.environ.get("SUPABASE_PORT", 6543)),
-        dbname   = os.environ["SUPABASE_DB"],
-        user     = os.environ["SUPABASE_USER"],
-        password = os.environ["SUPABASE_PASSWORD"],
-        sslmode  = "require",
+    conn = psycopg2.connect(
+        host            = os.environ["SUPABASE_HOST"],
+        port            = int(os.environ.get("SUPABASE_PORT", 6543)),
+        dbname          = os.environ["SUPABASE_DB"],
+        user            = os.environ["SUPABASE_USER"],
+        password        = os.environ["SUPABASE_PASSWORD"],
+        sslmode         = "require",
         connect_timeout = 30,
     )
+    conn.autocommit = True
+    return conn
 
 # ── Trip list ─────────────────────────────────────────────────────────────────
 
@@ -57,9 +76,7 @@ def fetch_trips(cur):
     cur.execute(TRIPS_QUERY.format(where=where))
     return cur.fetchall()
 
-# ── Per-trip reconstruction ───────────────────────────────────────────────────
-# Identical CTE logic to the original pipeline / Edge Function.
-# Returns one row per accelerometer sample with matched GNSS position.
+# ── Reconstruction query ──────────────────────────────────────────────────────
 
 RECONSTRUCTION_QUERY = """
 with params as (
@@ -140,6 +157,7 @@ order by b.output_samples
 """
 
 def reconstruct_trip(cur, trip_id):
+    cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
     cur.execute(RECONSTRUCTION_QUERY, {"trip_id": trip_id})
     return cur.fetchall(), [desc[0] for desc in cur.description]
 
@@ -147,7 +165,8 @@ def reconstruct_trip(cur, trip_id):
 
 def haversine(a, b):
     R = 6_371_000
-    lat1, lat2 = math.radians(float(a["latitude"])), math.radians(float(b["latitude"]))
+    lat1 = math.radians(float(a["latitude"]))
+    lat2 = math.radians(float(b["latitude"]))
     dlon = math.radians(float(b["longitude"]) - float(a["longitude"]))
     dlat = lat2 - lat1
     x = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
@@ -157,51 +176,79 @@ def rows_to_dicts(rows, cols):
     return [dict(zip(cols, row)) for row in rows]
 
 def privacy_trim(rows):
-    """Drop the first and last ~TRIM_M metres."""
     if len(rows) < 2:
         return rows
-
     cum, start_idx = 0, 0
     for k in range(1, len(rows)):
         d = haversine(rows[k - 1], rows[k])
-        if d > 500:
-            continue
+        if d > 500: continue
         cum += d
         if cum >= TRIM_M:
             start_idx = k
             break
-
     cum, end_idx = 0, len(rows) - 1
     for k in range(len(rows) - 1, 0, -1):
         d = haversine(rows[k], rows[k - 1])
-        if d > 500:
-            continue
+        if d > 500: continue
         cum += d
         if cum >= TRIM_M:
             end_idx = k
             break
-
     return rows[start_idx:end_idx] if start_idx < end_idx else rows
+
+def compute_road_quality_lookup(rows):
+    """
+    Build a sample-index → road_quality lookup from acc_y data.
+    Returns a function that maps a sample index to a quality score (1-5),
+    or None if there is not enough data or the module is unavailable.
+    """
+    if not ROAD_QUALITY_AVAILABLE or len(rows) < 200:
+        return None
+
+    acc_y = np.array([float(r["acc_y"] or 0) for r in rows])
+    try:
+        rq_data = calculate_road_quality(acc_y, window_size=100, overlap=0.5)
+    except Exception as e:
+        print(f"    ⚠️  Road quality calculation failed: {e}")
+        return None
+
+    quality_scores = rq_data["road_quality"]
+    time_windows   = rq_data["time_windows"]
+
+    def lookup(sample_idx):
+        if len(time_windows) == 0:
+            return 0
+        closest = int(np.argmin(np.abs(time_windows - sample_idx)))
+        return int(quality_scores[closest])
+
+    return lookup
+
 
 def rows_to_features(rows, trip_id, db_trip_id):
     features = []
-    trimmed = privacy_trim(rows)
+    trimmed  = privacy_trim(rows)
+
+    # Build road quality lookup from the full (untrimmed) acc_y series
+    # so the windowed analysis has maximum context.
+    quality_lookup = compute_road_quality_lookup(rows)
 
     for i in range(len(trimmed) - 1):
         a, b = trimmed[i], trimmed[i + 1]
-
         if not all([a["latitude"], a["longitude"], b["latitude"], b["longitude"]]):
             continue
-
         dist = haversine(a, b)
         if dist > MAX_GPS_JUMP_M:
             continue
         if a["longitude"] == b["longitude"] and a["latitude"] == b["latitude"]:
             continue
 
-        speed_a = (float(a["speed_gps"] or 0)) * 3.6
-        speed_b = (float(b["speed_gps"] or 0)) * 3.6
+        speed_a = float(a["speed_gps"] or 0) * 3.6
+        speed_b = float(b["speed_gps"] or 0) * 3.6
         speed   = min((speed_a + speed_b) / 2, MAX_SPEED_KMH)
+
+        # Use midpoint sample index for road quality lookup
+        mid_sample = (int(a["samples"] or 0) + int(b["samples"] or 0)) // 2
+        road_quality = quality_lookup(mid_sample) if quality_lookup else 0
 
         features.append({
             "type": "Feature",
@@ -213,68 +260,118 @@ def rows_to_features(rows, trip_id, db_trip_id):
                 ],
             },
             "properties": {
-                "trip_id":    trip_id,
-                "db_trip_id": db_trip_id,
-                "Speed":      round(speed, 1),
-                "marker":     a["marker"] or 0,
-                "Acc Y (g)":  float(a["acc_y"] or 0),
-                "road_quality": 0,  # computed client-side if needed
+                "trip_id":      trip_id,
+                "db_trip_id":   db_trip_id,
+                "Speed":        round(speed, 1),
+                "marker":       a["marker"] or 0,
+                "Acc Y (g)":    float(a["acc_y"] or 0),
+                "road_quality": road_quality,
             },
         })
-
     return features
-
-# ── Trip ID slug ──────────────────────────────────────────────────────────────
 
 def make_trip_id(system_id, db_trip_id):
     hex_slug = format(int(system_id) & 0xFFFFFFFFFFFFFFFF, 'X')[-5:]
     return f"{hex_slug}_Trip{db_trip_id}"
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Step 1: load existing processed files ─────────────────────────────────────
 
-def main():
-    print("🔌 Connecting to database...")
+def load_local_processed():
+    """Load all *_processed.geojson files and return (features, set of trip_ids)."""
+    features = []
+    trip_ids = set()
+
+    if not PROCESSED_ROOT.exists():
+        print("ℹ️  No processed_sensor_data/ folder found — skipping local files")
+        return features, trip_ids
+
+    files = sorted(PROCESSED_ROOT.rglob("*_processed.geojson"))
+    print(f"📂 Loading {len(files)} local processed file(s)…")
+
+    for path in files:
+        try:
+            data = json.loads(path.read_text())
+            for f in data.get("features", []):
+                tid = f.get("properties", {}).get("trip_id")
+                if tid:
+                    trip_ids.add(tid)
+                features.append(f)
+        except Exception as e:
+            print(f"  ⚠️  Could not read {path.name}: {e}")
+
+    print(f"✅ Local: {len(features)} segments from {len(trip_ids)} trips")
+    return features, trip_ids
+
+# ── Step 2: fetch new trips from Supabase ────────────────────────────────────
+
+def load_remote_trips(existing_trip_ids):
+    """Fetch trips from Supabase, skip any whose trip_id already exists locally."""
+    print("\n🔌 Connecting to Supabase…")
     try:
         conn = get_connection()
     except Exception as e:
-        print(f"❌ Connection failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"❌ Connection failed: {e}")
+        return []
 
-    all_features = []
+    features = []
+    skipped  = []
+    cur      = conn.cursor()
+    trips    = fetch_trips(cur)
+    print(f"📋 Found {len(trips)} trips in Supabase")
 
-    with conn:
-        with conn.cursor() as cur:
-            trips = fetch_trips(cur)
-            print(f"📋 Found {len(trips)} trips to process")
+    for trip_row in trips:
+        db_id, trip_start, trip_end, system_id = trip_row
+        trip_id = make_trip_id(system_id, db_id)
 
-            for trip_row in trips:
-                db_id, trip_start, trip_end, system_id = trip_row
-                trip_id = make_trip_id(system_id, db_id)
+        if trip_id in existing_trip_ids:
+            print(f"  ⏭️  {trip_id} already in local files — skipping")
+            continue
 
-                try:
-                    rows, cols = reconstruct_trip(cur, db_id)
-                    if not rows:
-                        print(f"  ⚠️  Trip {db_id} ({trip_id}): no rows — skipping")
-                        continue
+        try:
+            rows, cols = reconstruct_trip(cur, db_id)
+            if not rows:
+                print(f"  ⚠️  Trip {db_id} ({trip_id}): no rows — skipping")
+                continue
+            dicts    = rows_to_dicts(rows, cols)
+            new_feats = rows_to_features(dicts, trip_id, db_id)
+            features.extend(new_feats)
+            print(f"  ✅ {trip_id}: {len(rows)} samples → {len(new_feats)} segments")
+        except Exception as e:
+            print(f"  ❌ {trip_id}: {e}")
+            skipped.append(trip_id)
 
-                    dicts    = rows_to_dicts(rows, cols)
-                    features = rows_to_features(dicts, trip_id, db_id)
-                    all_features.extend(features)
-                    print(f"  ✅ Trip {db_id} ({trip_id}): {len(rows)} samples → {len(features)} segments")
-
-                except Exception as e:
-                    print(f"  ❌ Trip {db_id} ({trip_id}): {e}", file=sys.stderr)
-                    continue
-
+    cur.close()
     conn.close()
 
-    geojson = {"type": "FeatureCollection", "features": all_features}
+    if skipped:
+        print(f"\n⚠️  {len(skipped)} trip(s) skipped due to timeout/error:")
+        for t in skipped:
+            print(f"   {t}")
 
+    return features
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    # 1. Load local processed files first (best data quality)
+    local_features, local_trip_ids = load_local_processed()
+
+    # 2. Fetch remote trips not already covered locally
+    remote_features = load_remote_trips(local_trip_ids)
+
+    # 3. Merge — local takes priority (already deduplicated above)
+    all_features = local_features + remote_features
+
+    # 4. Write
+    geojson = {"type": "FeatureCollection", "features": all_features}
     with open(OUTPUT_FILE, "w") as f:
-        json.dump(geojson, f, separators=(",", ":"))  # compact — smaller file
+        json.dump(geojson, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(OUTPUT_FILE) / 1024
-    print(f"\n✅ Written {OUTPUT_FILE} — {len(all_features)} segments, {size_kb:.0f} KB")
+    print(f"\n✅ Written {OUTPUT_FILE}")
+    print(f"   Local trips  : {len(local_trip_ids)}")
+    print(f"   Remote trips : {len(set(f['properties']['trip_id'] for f in remote_features))}")
+    print(f"   Total segments: {len(all_features)} ({size_kb:.0f} KB)")
 
 if __name__ == "__main__":
     main()
