@@ -101,9 +101,7 @@ x as (
         rd.samples as raw_samples,
         rd.samples - 9 + gs.i as output_samples,
         trim(vals[gs.i * 4 + 1])::integer as acc_low,
-        trim(vals[gs.i * 4 + 2])::integer as acc_high,
-        trim(vals[gs.i * 4 + 3])::integer as hrot_low,
-        trim(vals[gs.i * 4 + 4])::integer as hrot_high
+        trim(vals[gs.i * 4 + 2])::integer as acc_high
     from (
         select rd.trip_id, rd.samples,
                string_to_array(
@@ -138,6 +136,7 @@ base as (
 select
     g.latitude,
     g.longitude,
+    g.speed  as speed_gps,
     b.marker,
     b.output_samples as samples,
     round((
@@ -146,8 +145,7 @@ select
                 then (b.acc_low + b.acc_high * 256) - 65536
             else (b.acc_low + b.acc_high * 256)
         end
-    ) / 1024.0, 3) as acc_y,
-    (b.hrot_low + b.hrot_high * 256) as h_rot
+    ) / 1024.0, 3) as acc_y
 from base b
 left join lateral (
     select g.latitude, g.longitude, g.speed
@@ -228,65 +226,44 @@ def compute_road_quality_lookup(rows):
     return lookup
 
 
-SAMPLE_RATE_HZ = 50
-SECONDS_PER_SAMPLE = 1 / SAMPLE_RATE_HZ  # 0.02s
-
 def rows_to_features(rows, trip_id, db_trip_id, wheel_diam_mm):
+    """
+    Convert reconstructed rows to GeoJSON features using GPS speed.
+    Each consecutive pair of points becomes one LineString segment.
+    Speed is taken directly from the matched GNSS speed (m/s → km/h),
+    smoothed with a 5-point rolling average to reduce GPS noise.
+    """
     features = []
     trimmed  = privacy_trim(rows)
 
-    # Build road quality lookup from the full (untrimmed) acc_y series
+    # Build road quality lookup from full untrimmed acc_y series
     quality_lookup = compute_road_quality_lookup(rows)
 
-    wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi
+    # Pre-compute smoothed GPS speeds (5-point rolling average)
+    # This reduces the jumpiness of raw GNSS speed readings
+    raw_speeds = [float(r["speed_gps"] or 0) * 3.6 for r in trimmed]
+    smoothed_speeds = []
+    window = 5
+    for k in range(len(raw_speeds)):
+        start = max(0, k - window // 2)
+        end   = min(len(raw_speeds), k + window // 2 + 1)
+        smoothed_speeds.append(sum(raw_speeds[start:end]) / (end - start))
 
-    # Walk trimmed points using the same hrot-diff logic as integrated_processor.py:
-    # advance until h_rot changes, calculate speed from rotations / time.
-    i = 0
-    while i < len(trimmed) - 1:
+    for i in range(len(trimmed) - 1):
         a = trimmed[i]
+        b = trimmed[i + 1]
 
-        if not all([a["latitude"], a["longitude"]]):
-            i += 1
-            continue
-
-        # Find next point where h_rot has changed
-        j = i + 1
-        while j < len(trimmed) and trimmed[j]["h_rot"] == a["h_rot"]:
-            j += 1
-
-        if j >= len(trimmed):
-            break
-
-        b = trimmed[j]
-
-        if not all([b["latitude"], b["longitude"]]):
-            i = j
+        if not all([a["latitude"], a["longitude"], b["latitude"], b["longitude"]]):
             continue
 
         dist = haversine(a, b)
         if dist > MAX_GPS_JUMP_M:
-            i = j
             continue
         if a["longitude"] == b["longitude"] and a["latitude"] == b["latitude"]:
-            i = j
             continue
 
-        # Time difference from sample index
-        sample_diff = int(b["samples"] or 0) - int(a["samples"] or 0)
-        time_diff_s = sample_diff * SECONDS_PER_SAMPLE
-        if time_diff_s <= 0 or time_diff_s > 600:
-            i = j
-            continue
-
-        # Wheel-rotation speed (same formula as integrated_processor.py)
-        hrot_diff = int(b["h_rot"] or 0) - int(a["h_rot"] or 0)
-        if hrot_diff > 0:
-            revolutions = hrot_diff / 2.0
-            distance_m  = revolutions * wheel_circumference_m
-            speed_kmh   = min((distance_m / time_diff_s) * 3.6, MAX_SPEED_KMH)
-        else:
-            speed_kmh = 0
+        # Average smoothed speed of the two endpoints, capped at 40 km/h
+        speed_kmh = min((smoothed_speeds[i] + smoothed_speeds[i + 1]) / 2, MAX_SPEED_KMH)
 
         mid_sample   = (int(a["samples"] or 0) + int(b["samples"] or 0)) // 2
         road_quality = quality_lookup(mid_sample) if quality_lookup else 0
@@ -310,7 +287,6 @@ def rows_to_features(rows, trip_id, db_trip_id, wheel_diam_mm):
             },
         })
 
-        i = j
     return features
 
 def make_trip_id(system_id, db_trip_id):
