@@ -4,12 +4,11 @@ generate_trips_geojson.py
 
 Builds trips.geojson by merging two sources:
   1. Existing processed_sensor_data/ files (real road quality + wheel speed)
-  2. New trips fetched from Supabase (GPS speed + road quality from accelerometer)
+  2. New trips fetched from Supabase (wheel speed from h_rot + road quality from acc_y)
 
 Local processed files take priority — if a trip_id exists in both,
 the local version wins (it has better wheel-rotation speed data).
-Supabase trips get road quality calculated on the fly from acc_y data
-using the same road_quality_calculator.py module as the main pipeline.
+Supabase trips use h_rot (wheel rotation) for speed, same as the local pipeline.
 
 Run: python generate_trips_geojson.py
 """
@@ -42,6 +41,8 @@ PROCESSED_ROOT        = Path("processed_sensor_data")
 MAX_SPEED_KMH         = 40
 MAX_GPS_JUMP_M        = 1000
 TRIM_M                = 100
+SAMPLE_RATE_HZ        = 50
+SECONDS_PER_SAMPLE    = 1 / SAMPLE_RATE_HZ
 INITIAL_DAYS          = None      # None = all trips; set e.g. 90 to limit
 STATEMENT_TIMEOUT     = "30s"
 
@@ -79,6 +80,8 @@ def fetch_trips(cur):
     return cur.fetchall()
 
 # ── Reconstruction query ──────────────────────────────────────────────────────
+# Pulls h_rot and speed from data1 (wheel-rotation based, same as local pipeline)
+# as well as speed_gps from gnss as a fallback reference.
 
 RECONSTRUCTION_QUERY = """
 with params as (
@@ -128,7 +131,13 @@ base as (
         (select d1.marker from public.data1 d1
          where d1.trip_id = x.trip_id and d1.samples = x.output_samples
            and d1.marker != 1 and d1.marker != 3 limit 1) as marker,
-        (select d1.timestamp from public.data1 d1
+        (select d1.h_rot from public.data1 d1
+         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
+           and d1.marker != 1 and d1.marker != 3 limit 1) as hrot,
+        (select d1.speed from public.data1 d1
+         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
+           and d1.marker != 1 and d1.marker != 3 limit 1) as speed_wheel,
+        (select d1."timestamp" from public.data1 d1
          where d1.trip_id = x.trip_id and d1.samples = x.output_samples
            and d1.marker != 1 and d1.marker != 3 limit 1) as d1_ts
     from x_filtered x
@@ -136,7 +145,9 @@ base as (
 select
     g.latitude,
     g.longitude,
-    g.speed  as speed_gps,
+    b.hrot        as hrot,
+    b.speed_wheel as speed_wheel,
+    g.speed       as speed_gps,
     b.marker,
     b.output_samples as samples,
     round((
@@ -145,13 +156,14 @@ select
                 then (b.acc_low + b.acc_high * 256) - 65536
             else (b.acc_low + b.acc_high * 256)
         end
-    ) / 1024.0, 3) as acc_y
+    ) / 1024.0, 3) as acc_y,
+    b.d1_ts
 from base b
 left join lateral (
     select g.latitude, g.longitude, g.speed
     from public.gnss g
     where g.trip_id = b.trip_id and b.d1_ts is not null
-    order by abs(extract(epoch from (g.timestamp - b.d1_ts)))
+    order by abs(extract(epoch from (g."timestamp" - b.d1_ts)))
     limit 1
 ) g on true
 where g.latitude is not null and g.longitude is not null
@@ -183,7 +195,8 @@ def privacy_trim(rows):
     cum, start_idx = 0, 0
     for k in range(1, len(rows)):
         d = haversine(rows[k - 1], rows[k])
-        if d > 500: continue
+        if d > 500:
+            continue
         cum += d
         if cum >= TRIM_M:
             start_idx = k
@@ -191,7 +204,8 @@ def privacy_trim(rows):
     cum, end_idx = 0, len(rows) - 1
     for k in range(len(rows) - 1, 0, -1):
         d = haversine(rows[k], rows[k - 1])
-        if d > 500: continue
+        if d > 500:
+            continue
         cum += d
         if cum >= TRIM_M:
             end_idx = k
@@ -228,64 +242,89 @@ def compute_road_quality_lookup(rows):
 
 def rows_to_features(rows, trip_id, db_trip_id, wheel_diam_mm):
     """
-    Convert reconstructed rows to GeoJSON features using GPS speed.
-    Each consecutive pair of points becomes one LineString segment.
-    Speed is taken directly from the matched GNSS speed (m/s → km/h),
-    smoothed with a 5-point rolling average to reduce GPS noise.
+    Convert reconstructed rows to GeoJSON features using wheel-rotation speed,
+    identical logic to integrated_processor.py. Falls back to sample-count timing
+    if timestamps are unavailable.
     """
     features = []
     trimmed  = privacy_trim(rows)
 
-    # Build road quality lookup from full untrimmed acc_y series
+    # Road quality from full untrimmed acc_y series
     quality_lookup = compute_road_quality_lookup(rows)
 
-    # Pre-compute smoothed GPS speeds (5-point rolling average)
-    # This reduces the jumpiness of raw GNSS speed readings
-    raw_speeds = [float(r["speed_gps"] or 0) * 3.6 for r in trimmed]
-    smoothed_speeds = []
-    window = 5
-    for k in range(len(raw_speeds)):
-        start = max(0, k - window // 2)
-        end   = min(len(raw_speeds), k + window // 2 + 1)
-        smoothed_speeds.append(sum(raw_speeds[start:end]) / (end - start))
+    wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi
 
-    for i in range(len(trimmed) - 1):
-        a = trimmed[i]
-        b = trimmed[i + 1]
+    i = 0
+    while i < len(trimmed) - 1:
+        start = trimmed[i]
 
-        if not all([a["latitude"], a["longitude"], b["latitude"], b["longitude"]]):
+        # Advance until hrot changes (mirrors integrated_processor.py logic)
+        j = i + 1
+        while j < len(trimmed) and trimmed[j]["hrot"] == start["hrot"]:
+            j += 1
+
+        if j >= len(trimmed):
+            break
+
+        end = trimmed[j]
+
+        # Time diff: prefer real timestamps, fall back to sample count
+        if start["d1_ts"] and end["d1_ts"]:
+            time_diff_s = (end["d1_ts"] - start["d1_ts"]).total_seconds()
+        else:
+            sample_diff = int(end["samples"] or 0) - int(start["samples"] or 0)
+            time_diff_s = sample_diff * SECONDS_PER_SAMPLE
+
+        if time_diff_s <= 0 or time_diff_s > 600:
+            i = j
             continue
 
-        dist = haversine(a, b)
-        if dist > MAX_GPS_JUMP_M:
-            continue
-        if a["longitude"] == b["longitude"] and a["latitude"] == b["latitude"]:
+        hrot_diff = (end["hrot"] or 0) - (start["hrot"] or 0)
+        if hrot_diff > 0 and time_diff_s > 0:
+            revolutions  = hrot_diff / 2.0
+            distance_m   = revolutions * wheel_circumference_m
+            speed_kmh    = min((distance_m / time_diff_s) * 3.6, MAX_SPEED_KMH)
+        else:
+            speed_kmh = 0
+
+        gps_dist = haversine(start, end)
+        if gps_dist > MAX_GPS_JUMP_M:
+            i = j
             continue
 
-        # Average smoothed speed of the two endpoints, capped at 40 km/h
-        speed_kmh = min((smoothed_speeds[i] + smoothed_speeds[i + 1]) / 2, MAX_SPEED_KMH)
+        if start["longitude"] == end["longitude"] and start["latitude"] == end["latitude"]:
+            i = j
+            continue
 
-        mid_sample   = (int(a["samples"] or 0) + int(b["samples"] or 0)) // 2
+        mid_sample   = (int(start["samples"] or 0) + int(end["samples"] or 0)) // 2
         road_quality = quality_lookup(mid_sample) if quality_lookup else 0
 
-        features.append({
-            "type": "Feature",
-            "geometry": {
-                "type": "LineString",
-                "coordinates": [
-                    [float(a["longitude"]), float(a["latitude"])],
-                    [float(b["longitude"]), float(b["latitude"])],
-                ],
-            },
-            "properties": {
-                "trip_id":      trip_id,
-                "db_trip_id":   db_trip_id,
-                "Speed":        round(speed_kmh, 1),
-                "marker":       a["marker"] or 0,
-                "Acc Y (g)":    float(a["acc_y"] or 0),
-                "road_quality": road_quality,
-            },
-        })
+        if speed_kmh < MAX_SPEED_KMH:
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [float(start["longitude"]), float(start["latitude"])],
+                        [float(end["longitude"]),   float(end["latitude"])],
+                    ],
+                },
+                "properties": {
+                    "trip_id":           trip_id,
+                    "db_trip_id":        db_trip_id,
+                    "Speed":             round(speed_kmh, 1),
+                    "marker":            start["marker"] or 0,
+                    "Acc Y (g)":         float(start["acc_y"] or 0),
+                    "road_quality":      road_quality,
+                    "hrot_diff":         hrot_diff,
+                    "sample_diff":       int(end["samples"] or 0) - int(start["samples"] or 0),
+                    "time_diff_s":       round(time_diff_s, 3),
+                    "gps_distance_m":    round(gps_dist, 1),
+                    "wheel_diameter_mm": wheel_diam_mm,
+                },
+            })
+
+        i = j
 
     return features
 
@@ -321,7 +360,7 @@ def load_local_processed():
     print(f"✅ Local: {len(features)} segments from {len(trip_ids)} trips")
     return features, trip_ids
 
-# ── Step 2: fetch new trips from Supabase ────────────────────────────────────
+# ── Step 2: fetch new trips from Supabase ─────────────────────────────────────
 
 def load_remote_trips(existing_trip_ids):
     """Fetch trips from Supabase, skip any whose trip_id already exists locally."""
@@ -357,7 +396,7 @@ def load_remote_trips(existing_trip_ids):
             if not rows:
                 print(f"  ⚠️  Trip {db_id} ({trip_id}): no rows — skipping")
                 continue
-            dicts    = rows_to_dicts(rows, cols)
+            dicts     = rows_to_dicts(rows, cols)
             new_feats = rows_to_features(dicts, trip_id, db_id, wheel_diam_mm)
             features.extend(new_feats)
             print(f"  ✅ {trip_id}: {len(rows)} samples → {len(new_feats)} segments")
