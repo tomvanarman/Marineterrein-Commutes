@@ -725,10 +725,21 @@ function renderSensorLegend() {
   const legend = document.getElementById('sensorLegend');
   if (!legend) return;
   legend.innerHTML = `<h4>Sensors</h4>` + Object.entries(sensorColorMap).map(([s, c]) => `
-    <div class="speed-legend-item">
+    <div class="speed-legend-item sensor-legend-item" data-sensor="${s}" style="cursor:pointer;" title="Click to highlight ${s}">
       <div class="speed-color-box" style="background:${c};"></div>
       <span>${s}</span>
     </div>`).join('');
+
+  // Add click handlers
+  legend.querySelectorAll('.sensor-legend-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const sensor = item.dataset.sensor;
+      const input = document.getElementById('tripSearchInput');
+      if (input) input.value = sensor;
+      searchAndHighlightTrip(sensor);
+    });
+  });
+
   legend.style.display = 'block';
   updateLegendPositions();
 }

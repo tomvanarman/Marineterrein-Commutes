@@ -408,6 +408,16 @@ input[type="range"] {
   font-family: 'Rajdhani', sans-serif;
 }
 
+.sensor-legend-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+.sensor-legend-item.active {
+  outline: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
+}
+
 .speed-color-box {
   width: 30px;
   height: 4px;
