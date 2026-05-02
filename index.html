@@ -22,119 +22,120 @@
     📘 Manual
   </button>
 
-  <!-- Sliding Manual Panel -->
+    <!-- Sliding Manual Panel -->
   <div id="manualPanel">
 
     <div class="manual-header">
-    <h3>Cycling Behaviour Dashboard</h3>
-    <button id="manualCloseBtn" title="Close Manual">✕</button>
-  </div>
-
-  <div class="manual-content">
-
-    <section>
-      <h4>Purpose of the Dashboard</h4>
-      <p>
-        This dashboard is designed for officials and urban planners within the
-        Municipality of Amsterdam to demonstrate the potential of
-        <strong>cycling-behaviour-informed policy planning</strong>.
-      </p>
-      <p>
-        It combines self-collected cycling sensor data (speed and road quality)
-        with aggregated road segment analysis.
-      </p>
-    </section>
-
-    <section>
-      <h4>How to Read the Map</h4>
-      <p>
-        The map visualises Amsterdam's cycling network using selectable data layers.
-        Each layer has its own scale, legend, and policy interpretation.
-      </p>
-    </section>
-
-    <section>
-      <h4>Available Data Layers</h4>
-
-      <h5>Speed</h5>
-      <p>
-        Displays average cycling speed across recorded trips, supporting the
-        identification of slow or fast corridors.
-      </p>
-
-      <h5>Road Quality</h5>
-      <p>
-        Based on third-party infrastructure data, categorised from "Perfect" to
-        "No road", supporting infrastructure assessment and maintenance planning.
-      </p>
-
-      <h5>Averaged Road Segments</h5>
-      <p>
-        Aggregates speed and road quality into averaged scores per road segment,
-        supporting corridor-level analysis.
-      </p>
-
-      <h5> Composite Score (Quality + Speed)</h5>
-      <p>
-      Within the averaged road segments, you'll see a subfilter which combines infrastructure 
-      condition and cycling performance into a single indicator for comparative assessment.
-      </p>
-    </section>
-
-    <section>
-      <h4>Using Filters and Interpretations</h4>
-      <p>
-        Filters can be activated individually or in combination. Each combination
-        reflects a deliberate analytical perspective chosen by the user.
-      </p>
-      <p>
-        The dashboard does not prescribe a single interpretation, but supports
-        exploratory, policy-driven analysis.
-      </p>
-    </section>
-
-    <section>
-      <h4>Responsible Use</h4>
-      <p>
-        Behavioural indicators should be understood as signals rather than
-        definitive diagnoses. Results should be interpreted alongside contextual
-        knowledge of street design, traffic conditions, and policy objectives.
-      </p>
-    </section>
-
-  </div>
-</div>
-
-<!-- Leaderboard Toggle Button -->
-<button id="leaderboardToggleBtn" title="Sensor Leaderboard">
-  🏆 Leaderboard
-</button>
-
-<!-- Leaderboard Panel -->
-<div id="leaderboardPanel">
-  <div class="leaderboard-header">
-    <h3>🏆 Sensor Leaderboard</h3>
-    <button id="leaderboardCloseBtn">✕</button>
-  </div>
-  <div class="leaderboard-content">
-    <div class="leaderboard-section">
-      <div class="leaderboard-section-title">📏 Most Kilometres</div>
-      <ol id="lbKm" class="leaderboard-list"></ol>
+      <h3>Cycling Behaviour Dashboard</h3>
+      <button id="manualCloseBtn" title="Close Manual">✕</button>
     </div>
-    <div class="leaderboard-section">
-      <div class="leaderboard-section-title">🔁 Most Rides</div>
-      <ol id="lbRides" class="leaderboard-list"></ol>
+
+    <div class="manual-content">
+
+      <section>
+        <h4>Purpose of the Dashboard</h4>
+        <p>
+          This dashboard is designed for officials and urban planners within the
+          Municipality of Amsterdam to demonstrate the potential of
+          <strong>cycling-behaviour-informed policy planning</strong>.
+        </p>
+        <p>
+          It combines self-collected cycling sensor data (speed and road quality)
+          with aggregated road segment analysis.
+        </p>
+      </section>
+
+      <section>
+        <h4>How to Read the Map</h4>
+        <p>
+          The map visualises Amsterdam's cycling network using selectable data layers.
+          Each layer has its own scale, legend, and policy interpretation.
+        </p>
+      </section>
+
+      <section>
+        <h4>Available Data Layers</h4>
+
+        <h5>Speed</h5>
+        <p>
+          Displays average cycling speed across recorded trips, supporting the
+          identification of slow or fast corridors.
+        </p>
+
+        <h5>Road Quality</h5>
+        <p>
+          Based on third-party infrastructure data, categorised from "Perfect" to
+          "No road", supporting infrastructure assessment and maintenance planning.
+        </p>
+
+        <h5>Averaged Road Segments</h5>
+        <p>
+          Aggregates speed and road quality into averaged scores per road segment,
+          supporting corridor-level analysis.
+        </p>
+
+        <h5>Composite Score (Quality + Speed)</h5>
+        <p>
+          Within the averaged road segments, you'll see a subfilter which combines infrastructure
+          condition and cycling performance into a single indicator for comparative assessment.
+        </p>
+      </section>
+
+      <section>
+        <h4>Using Filters and Interpretations</h4>
+        <p>
+          Filters can be activated individually or in combination. Each combination
+          reflects a deliberate analytical perspective chosen by the user.
+        </p>
+        <p>
+          The dashboard does not prescribe a single interpretation, but supports
+          exploratory, policy-driven analysis.
+        </p>
+      </section>
+
+      <section>
+        <h4>Responsible Use</h4>
+        <p>
+          Behavioural indicators should be understood as signals rather than
+          definitive diagnoses. Results should be interpreted alongside contextual
+          knowledge of street design, traffic conditions, and policy objectives.
+        </p>
+      </section>
+
+    </div> <!-- closes .manual-content -->
+
+  </div> <!-- closes #manualPanel -->
+
+  <!-- Leaderboard Toggle Button -->
+  <button id="leaderboardToggleBtn" title="Sensor Leaderboard">
+    🏆 Leaderboard
+  </button>
+
+  <!-- Leaderboard Panel -->
+  <div id="leaderboardPanel">
+    <div class="leaderboard-header">
+      <h3>🏆 Sensor Leaderboard</h3>
+      <button id="leaderboardCloseBtn">✕</button>
     </div>
-    <div class="leaderboard-section">
-      <div class="leaderboard-section-title">🛑 Most Stops</div>
-      <ol id="lbStops" class="leaderboard-list"></ol>
-    </div>
-    <div class="leaderboard-section">
-      <div class="leaderboard-section-title">⚡ Top Speed</div>
-      <ol id="lbSpeed" class="leaderboard-list"></ol>
+    <div class="leaderboard-content">
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">📏 Most Kilometres</div>
+        <ol id="lbKm" class="leaderboard-list"></ol>
+      </div>
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">🔁 Most Rides</div>
+        <ol id="lbRides" class="leaderboard-list"></ol>
+      </div>
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">🛑 Most Stops</div>
+        <ol id="lbStops" class="leaderboard-list"></ol>
+      </div>
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">⚡ Top Speed</div>
+        <ol id="lbSpeed" class="leaderboard-list"></ol>
+      </div>
     </div>
   </div>
-</div>
   
   <div id="map"></div>
 
