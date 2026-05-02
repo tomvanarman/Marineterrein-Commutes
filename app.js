@@ -444,6 +444,19 @@ map.on('load', async () => {
     // Fetch live GeoJSON from Supabase edge function
     const geojson = await loadTripsGeoJSON();
 
+    import { buildLeaderboard, renderLeaderboard } from './leaderboard.js';
+
+    // After fetching trips.geojson:
+    fetch('trips.geojson')
+      .then(r => r.json())
+      .then(data => {
+        // ... your existing map setup code ...
+
+        // Add leaderboard
+        const sensors = buildLeaderboard(data.features);
+        renderLeaderboard(sensors);
+      });
+
     // Extract unique trip IDs
     tripIds = [...new Set((geojson.features || []).map(f => f.properties.trip_id).filter(Boolean))].sort();
     console.log(`📊 ${tripIds.length} unique trips loaded`);

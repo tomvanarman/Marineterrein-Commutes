@@ -3,30 +3,32 @@
 generate_trips_geojson.py
 
 Builds trips.geojson by merging two sources:
-  1. Existing processed_sensor_data/ files (real road quality + wheel speed)
-  2. New trips fetched from Supabase (wheel speed from h_rot + road quality from acc_y)
+  1. Existing processed_sensor_data/ files (wheel-rotation speed, best quality)
+  2. New trips fetched from Supabase (gnss.speed in km/h, ~1754 pts/trip)
 
 Local processed files take priority — if a trip_id exists in both,
-the local version wins (it has better wheel-rotation speed data).
-Supabase trips use h_rot (wheel rotation) for speed, same as the local pipeline.
+the local version wins.
+
+Supabase trips use gnss.speed directly (already in km/h) with a 5-point
+rolling average to smooth GPS noise. Road quality is calculated from
+decoded acc_y via road_quality_calculator.py.
 
 Run: python generate_trips_geojson.py
 """
 
+import bisect
 import json
 import math
 import os
-import sys
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
 import psycopg2
-import psycopg2.extras
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Import road quality calculator (same module used by integrated_processor.py)
 try:
     from road_quality_calculator import calculate_road_quality
     ROAD_QUALITY_AVAILABLE = True
@@ -36,15 +38,14 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-OUTPUT_FILE           = "trips.geojson"
-PROCESSED_ROOT        = Path("processed_sensor_data")
-MAX_SPEED_KMH         = 40
-MAX_GPS_JUMP_M        = 1000
-TRIM_M                = 100
-SAMPLE_RATE_HZ        = 50
-SECONDS_PER_SAMPLE    = 1 / SAMPLE_RATE_HZ
-INITIAL_DAYS          = None      # None = all trips; set e.g. 90 to limit
-STATEMENT_TIMEOUT     = "30s"
+OUTPUT_FILE        = "trips.geojson"
+PROCESSED_ROOT     = Path("processed_sensor_data")
+MAX_SPEED_KMH      = 40
+MAX_GPS_JUMP_M     = 1000
+TRIM_M             = 100
+INITIAL_DAYS       = None   # None = all trips; set e.g. 90 to limit
+STATEMENT_TIMEOUT  = "30s"
+SPEED_SMOOTH_WIN   = 5      # rolling average window for gnss speed
 
 # ── DB connection ─────────────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ from public.trips
 order by trip_start desc
 """
 
-DEFAULT_WHEEL_DIAM_INCH = 28.0  # fallback if not in DB
+DEFAULT_WHEEL_DIAM_INCH = 28.0
 
 def fetch_trips(cur):
     where = ""
@@ -79,11 +80,10 @@ def fetch_trips(cur):
     cur.execute(TRIPS_QUERY.format(where=where))
     return cur.fetchall()
 
-# ── Reconstruction query ──────────────────────────────────────────────────────
-# Pulls h_rot and speed from data1 (wheel-rotation based, same as local pipeline)
-# as well as speed_gps from gnss as a fallback reference.
+# ── Queries ───────────────────────────────────────────────────────────────────
 
-RECONSTRUCTION_QUERY = """
+# 1. Decoded acc_y from raw_data blobs (for road quality)
+RAW_QUERY = """
 with params as (
     select %(trip_id)s::int as trip_id
 ),
@@ -100,13 +100,11 @@ marker_bounds as (
 ),
 x as (
     select
-        rd.trip_id,
-        rd.samples as raw_samples,
         rd.samples - 9 + gs.i as output_samples,
         trim(vals[gs.i * 4 + 1])::integer as acc_low,
         trim(vals[gs.i * 4 + 2])::integer as acc_high
     from (
-        select rd.trip_id, rd.samples,
+        select rd.samples,
                string_to_array(
                    replace(replace(convert_from(rd.data, 'UTF8'), '[', ''), ']', ''),
                    ','
@@ -118,62 +116,109 @@ x as (
           and rd.samples - 9 <= mb.end_sample
     ) rd
     cross join generate_series(0, 9) as gs(i)
-),
-x_filtered as (
-    select x.* from x
-    join marker_bounds mb on mb.trip_id = x.trip_id
-    where x.output_samples >= mb.start_sample
-      and x.output_samples <= mb.end_sample
-),
-base as (
-    select
-        x.*,
-        (select d1.marker from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as marker,
-        (select d1.h_rot from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as hrot,
-        (select d1.speed from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as speed_wheel,
-        (select d1."timestamp" from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as d1_ts
-    from x_filtered x
 )
 select
-    g.latitude,
-    g.longitude,
-    b.hrot        as hrot,
-    b.speed_wheel as speed_wheel,
-    g.speed       as speed_gps,
-    b.marker,
-    b.output_samples as samples,
+    x.output_samples as samples,
     round((
         case
-            when (b.acc_low + b.acc_high * 256) >= 32768
-                then (b.acc_low + b.acc_high * 256) - 65536
-            else (b.acc_low + b.acc_high * 256)
+            when (x.acc_low + x.acc_high * 256) >= 32768
+                then (x.acc_low + x.acc_high * 256) - 65536
+            else (x.acc_low + x.acc_high * 256)
         end
-    ) / 1024.0, 3) as acc_y,
-    b.d1_ts
-from base b
-left join lateral (
-    select g.latitude, g.longitude, g.speed
-    from public.gnss g
-    where g.trip_id = b.trip_id and b.d1_ts is not null
-    order by abs(extract(epoch from (g."timestamp" - b.d1_ts)))
-    limit 1
-) g on true
-where g.latitude is not null and g.longitude is not null
-order by b.output_samples
+    ) / 1024.0, 3) as acc_y
+from x
+join marker_bounds mb on true
+where x.output_samples >= mb.start_sample
+  and x.output_samples <= mb.end_sample
+order by x.output_samples
 """
 
-def reconstruct_trip(cur, trip_id):
+# 2. GNSS points with speed (already in km/h)
+GNSS_QUERY = """
+select latitude, longitude, speed, "timestamp"
+from public.gnss
+where trip_id = %(trip_id)s
+  and latitude  is not null
+  and longitude is not null
+order by "timestamp"
+"""
+
+# 3. data1 anchors for sample→timestamp mapping (road quality lookup)
+DATA1_QUERY = """
+select samples, "timestamp"
+from public.data1
+where trip_id = %(trip_id)s
+order by samples
+"""
+
+def fetch_trip_data(cur, trip_id):
     cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
-    cur.execute(RECONSTRUCTION_QUERY, {"trip_id": trip_id})
-    return cur.fetchall(), [desc[0] for desc in cur.description]
+
+    cur.execute(RAW_QUERY, {"trip_id": trip_id})
+    raw_rows = cur.fetchall()
+    raw_cols = [d[0] for d in cur.description]
+
+    cur.execute(GNSS_QUERY, {"trip_id": trip_id})
+    gnss_rows = cur.fetchall()
+    gnss_cols = [d[0] for d in cur.description]
+
+    cur.execute(DATA1_QUERY, {"trip_id": trip_id})
+    d1_rows = cur.fetchall()
+    d1_cols = [d[0] for d in cur.description]
+
+    return raw_rows, raw_cols, gnss_rows, gnss_cols, d1_rows, d1_cols
+
+# ── Road quality ──────────────────────────────────────────────────────────────
+
+def compute_road_quality_lookup(raw_rows, raw_cols, d1_rows, d1_cols):
+    """
+    Build a timestamp → road_quality lookup using decoded acc_y samples.
+    Maps each raw sample to a timestamp via data1 anchors, then returns
+    a function: timestamp → quality score (1-5) or 0 if unavailable.
+    """
+    if not ROAD_QUALITY_AVAILABLE or not raw_rows or len(raw_rows) < 200:
+        return None
+
+    raw  = [dict(zip(raw_cols, r)) for r in raw_rows]
+    d1   = [dict(zip(d1_cols, r)) for r in d1_rows]
+
+    if not d1:
+        return None
+
+    d1_samples = [r["samples"]   for r in d1]
+    d1_ts      = [r["timestamp"] for r in d1]
+
+    def interp_ts(sample_idx):
+        pos = bisect.bisect_left(d1_samples, sample_idx)
+        if pos == 0:
+            anchor = 0
+        elif pos >= len(d1_samples):
+            anchor = len(d1_samples) - 1
+        else:
+            before, after = pos - 1, pos
+            anchor = before if abs(d1_samples[before] - sample_idx) <= abs(d1_samples[after] - sample_idx) else after
+        diff = sample_idx - d1_samples[anchor]
+        return d1_ts[anchor] + timedelta(milliseconds=diff * 20)
+
+    acc_y = np.array([float(r["acc_y"] or 0) for r in raw])
+    try:
+        rq_data = calculate_road_quality(acc_y, window_size=100, overlap=0.5)
+    except Exception as e:
+        print(f"    ⚠️  Road quality failed: {e}")
+        return None
+
+    quality_scores = rq_data["road_quality"]
+    # Map window indices back to timestamps
+    time_windows = rq_data["time_windows"]
+    window_ts = [interp_ts(int(w)) for w in time_windows]
+
+    def lookup(ts):
+        if not window_ts:
+            return 0
+        diffs = [abs((t - ts).total_seconds()) for t in window_ts]
+        return int(quality_scores[diffs.index(min(diffs))])
+
+    return lookup
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
@@ -185,9 +230,6 @@ def haversine(a, b):
     dlat = lat2 - lat1
     x = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(x), math.sqrt(1 - x))
-
-def rows_to_dicts(rows, cols):
-    return [dict(zip(cols, row)) for row in rows]
 
 def privacy_trim(rows):
     if len(rows) < 2:
@@ -212,119 +254,70 @@ def privacy_trim(rows):
             break
     return rows[start_idx:end_idx] if start_idx < end_idx else rows
 
-def compute_road_quality_lookup(rows):
+# ── Feature builder ───────────────────────────────────────────────────────────
+
+def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
+                     d1_rows, d1_cols, trip_id, db_trip_id, wheel_diam_mm):
     """
-    Build a sample-index → road_quality lookup from acc_y data.
-    Returns a function that maps a sample index to a quality score (1-5),
-    or None if there is not enough data or the module is unavailable.
+    One LineString per consecutive gnss point pair.
+    Speed = smoothed gnss.speed (already km/h), capped at MAX_SPEED_KMH.
+    Road quality from decoded acc_y via timestamp lookup.
     """
-    if not ROAD_QUALITY_AVAILABLE or len(rows) < 200:
-        return None
+    if not gnss_rows:
+        return []
 
-    acc_y = np.array([float(r["acc_y"] or 0) for r in rows])
-    try:
-        rq_data = calculate_road_quality(acc_y, window_size=100, overlap=0.5)
-    except Exception as e:
-        print(f"    ⚠️  Road quality calculation failed: {e}")
-        return None
+    gnss    = [dict(zip(gnss_cols, r)) for r in gnss_rows]
+    trimmed = privacy_trim(gnss)
+    if len(trimmed) < 2:
+        return []
 
-    quality_scores = rq_data["road_quality"]
-    time_windows   = rq_data["time_windows"]
+    # Smoothed speeds (5-point rolling average)
+    raw_speeds = [min(float(r["speed"] or 0), MAX_SPEED_KMH) for r in trimmed]
+    smoothed   = []
+    w          = SPEED_SMOOTH_WIN
+    for k in range(len(raw_speeds)):
+        start = max(0, k - w // 2)
+        end   = min(len(raw_speeds), k + w // 2 + 1)
+        smoothed.append(sum(raw_speeds[start:end]) / (end - start))
 
-    def lookup(sample_idx):
-        if len(time_windows) == 0:
-            return 0
-        closest = int(np.argmin(np.abs(time_windows - sample_idx)))
-        return int(quality_scores[closest])
+    quality_lookup = compute_road_quality_lookup(raw_rows, raw_cols, d1_rows, d1_cols)
 
-    return lookup
-
-
-def rows_to_features(rows, trip_id, db_trip_id, wheel_diam_mm):
-    """
-    Convert reconstructed rows to GeoJSON features using wheel-rotation speed,
-    identical logic to integrated_processor.py. Falls back to sample-count timing
-    if timestamps are unavailable.
-    """
     features = []
-    trimmed  = privacy_trim(rows)
+    for i in range(len(trimmed) - 1):
+        a = trimmed[i]
+        b = trimmed[i + 1]
 
-    # Road quality from full untrimmed acc_y series
-    quality_lookup = compute_road_quality_lookup(rows)
-
-    wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi
-
-    i = 0
-    while i < len(trimmed) - 1:
-        start = trimmed[i]
-
-        # Advance until hrot changes (mirrors integrated_processor.py logic)
-        j = i + 1
-        while j < len(trimmed) and trimmed[j]["hrot"] == start["hrot"]:
-            j += 1
-
-        if j >= len(trimmed):
-            break
-
-        end = trimmed[j]
-
-        # Time diff: prefer real timestamps, fall back to sample count
-        if start["d1_ts"] and end["d1_ts"]:
-            time_diff_s = (end["d1_ts"] - start["d1_ts"]).total_seconds()
-        else:
-            sample_diff = int(end["samples"] or 0) - int(start["samples"] or 0)
-            time_diff_s = sample_diff * SECONDS_PER_SAMPLE
-
-        if time_diff_s <= 0 or time_diff_s > 600:
-            i = j
+        dist = haversine(a, b)
+        if dist > MAX_GPS_JUMP_M or dist == 0:
             continue
 
-        hrot_diff = (end["hrot"] or 0) - (start["hrot"] or 0)
-        if hrot_diff > 0 and time_diff_s > 0:
-            revolutions  = hrot_diff / 2.0
-            distance_m   = revolutions * wheel_circumference_m
-            speed_kmh    = min((distance_m / time_diff_s) * 3.6, MAX_SPEED_KMH)
-        else:
-            speed_kmh = 0
+        speed_kmh    = min((smoothed[i] + smoothed[i + 1]) / 2, MAX_SPEED_KMH)
+        time_diff_s  = (b["timestamp"] - a["timestamp"]).total_seconds() if a["timestamp"] and b["timestamp"] else 0
+        road_quality = quality_lookup(a["timestamp"]) if quality_lookup and a["timestamp"] else 0
 
-        gps_dist = haversine(start, end)
-        if gps_dist > MAX_GPS_JUMP_M:
-            i = j
-            continue
-
-        if start["longitude"] == end["longitude"] and start["latitude"] == end["latitude"]:
-            i = j
-            continue
-
-        mid_sample   = (int(start["samples"] or 0) + int(end["samples"] or 0)) // 2
-        road_quality = quality_lookup(mid_sample) if quality_lookup else 0
-
-        if speed_kmh < MAX_SPEED_KMH:
-            features.append({
-                "type": "Feature",
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": [
-                        [float(start["longitude"]), float(start["latitude"])],
-                        [float(end["longitude"]),   float(end["latitude"])],
-                    ],
-                },
-                "properties": {
-                    "trip_id":           trip_id,
-                    "db_trip_id":        db_trip_id,
-                    "Speed":             round(speed_kmh, 1),
-                    "marker":            start["marker"] or 0,
-                    "Acc Y (g)":         float(start["acc_y"] or 0),
-                    "road_quality":      road_quality,
-                    "hrot_diff":         hrot_diff,
-                    "sample_diff":       int(end["samples"] or 0) - int(start["samples"] or 0),
-                    "time_diff_s":       round(time_diff_s, 3),
-                    "gps_distance_m":    round(gps_dist, 1),
-                    "wheel_diameter_mm": wheel_diam_mm,
-                },
-            })
-
-        i = j
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [
+                    [float(a["longitude"]), float(a["latitude"])],
+                    [float(b["longitude"]), float(b["latitude"])],
+                ],
+            },
+            "properties": {
+                "trip_id":           trip_id,
+                "db_trip_id":        db_trip_id,
+                "Speed":             round(speed_kmh, 1),
+                "marker":            0,
+                "Acc Y (g)":         0,
+                "road_quality":      road_quality,
+                "hrot_diff":         0,
+                "sample_diff":       0,
+                "time_diff_s":       round(time_diff_s, 3),
+                "gps_distance_m":    round(dist, 1),
+                "wheel_diameter_mm": wheel_diam_mm,
+            },
+        })
 
     return features
 
@@ -335,7 +328,6 @@ def make_trip_id(system_id, db_trip_id):
 # ── Step 1: load existing processed files ─────────────────────────────────────
 
 def load_local_processed():
-    """Load all *_processed.geojson files and return (features, set of trip_ids)."""
     features = []
     trip_ids = set()
 
@@ -363,7 +355,6 @@ def load_local_processed():
 # ── Step 2: fetch new trips from Supabase ─────────────────────────────────────
 
 def load_remote_trips(existing_trip_ids):
-    """Fetch trips from Supabase, skip any whose trip_id already exists locally."""
     print("\n🔌 Connecting to Supabase…")
     try:
         conn = get_connection()
@@ -381,7 +372,6 @@ def load_remote_trips(existing_trip_ids):
         db_id, trip_start, trip_end, system_id, wheel_diam = trip_row
         trip_id = make_trip_id(system_id, db_id)
 
-        # Convert wheel diameter: DB stores inches, we need mm
         try:
             wheel_diam_mm = float(wheel_diam) * 25.4 if wheel_diam else DEFAULT_WHEEL_DIAM_INCH * 25.4
         except (TypeError, ValueError):
@@ -392,14 +382,21 @@ def load_remote_trips(existing_trip_ids):
             continue
 
         try:
-            rows, cols = reconstruct_trip(cur, db_id)
-            if not rows:
-                print(f"  ⚠️  Trip {db_id} ({trip_id}): no rows — skipping")
+            raw_rows, raw_cols, gnss_rows, gnss_cols, d1_rows, d1_cols = fetch_trip_data(cur, db_id)
+
+            if not gnss_rows:
+                print(f"  ⚠️  Trip {db_id} ({trip_id}): no gnss rows — skipping")
                 continue
-            dicts     = rows_to_dicts(rows, cols)
-            new_feats = rows_to_features(dicts, trip_id, db_id, wheel_diam_mm)
+
+            new_feats = rows_to_features(
+                gnss_rows, gnss_cols,
+                raw_rows,  raw_cols,
+                d1_rows,   d1_cols,
+                trip_id, db_id, wheel_diam_mm
+            )
             features.extend(new_feats)
-            print(f"  ✅ {trip_id}: {len(rows)} samples → {len(new_feats)} segments")
+            print(f"  ✅ {trip_id}: {len(gnss_rows)} gnss pts → {len(new_feats)} segments")
+
         except Exception as e:
             print(f"  ❌ {trip_id}: {e}")
             skipped.append(trip_id)
@@ -408,7 +405,7 @@ def load_remote_trips(existing_trip_ids):
     conn.close()
 
     if skipped:
-        print(f"\n⚠️  {len(skipped)} trip(s) skipped due to timeout/error:")
+        print(f"\n⚠️  {len(skipped)} trip(s) skipped:")
         for t in skipped:
             print(f"   {t}")
 
@@ -417,16 +414,10 @@ def load_remote_trips(existing_trip_ids):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    # 1. Load local processed files first (best data quality)
     local_features, local_trip_ids = load_local_processed()
-
-    # 2. Fetch remote trips not already covered locally
     remote_features = load_remote_trips(local_trip_ids)
-
-    # 3. Merge — local takes priority (already deduplicated above)
     all_features = local_features + remote_features
 
-    # 4. Write
     geojson = {"type": "FeatureCollection", "features": all_features}
     with open(OUTPUT_FILE, "w") as f:
         json.dump(geojson, f, separators=(",", ":"))
@@ -434,7 +425,8 @@ def main():
     size_kb = os.path.getsize(OUTPUT_FILE) / 1024
     print(f"\n✅ Written {OUTPUT_FILE}")
     print(f"   Local trips  : {len(local_trip_ids)}")
-    print(f"   Remote trips : {len(set(f['properties']['trip_id'] for f in remote_features))}")
+    remote_ids = set(f['properties']['trip_id'] for f in remote_features)
+    print(f"   Remote trips : {len(remote_ids)}")
     print(f"   Total segments: {len(all_features)} ({size_kb:.0f} KB)")
 
 if __name__ == "__main__":

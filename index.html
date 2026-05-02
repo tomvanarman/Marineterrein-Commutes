@@ -104,6 +104,37 @@
     </section>
 
   </div>
+
+  <!-- Leaderboard Toggle Button -->
+  <button id="leaderboardToggleBtn" title="Sensor Leaderboard">
+    🏆 Leaderboard
+  </button>
+
+  <!-- Leaderboard Panel -->
+  <div id="leaderboardPanel">
+    <div class="leaderboard-header">
+      <h3>🏆 Sensor Leaderboard</h3>
+      <button id="leaderboardCloseBtn">✕</button>
+    </div>
+    <div class="leaderboard-content">
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">📏 Most Kilometres</div>
+        <ol id="lbKm" class="leaderboard-list"></ol>
+      </div>
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">🔁 Most Rides</div>
+        <ol id="lbRides" class="leaderboard-list"></ol>
+      </div>
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">🛑 Most Stops</div>
+        <ol id="lbStops" class="leaderboard-list"></ol>
+      </div>
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">⚡ Top Speed</div>
+        <ol id="lbSpeed" class="leaderboard-list"></ol>
+      </div>
+    </div>
+  </div>
 </div>
   
   <div id="map"></div>
@@ -442,6 +473,18 @@
   });
 </script>
 
+<script>
+  // Leaderboard toggle
+  const leaderboardPanel = document.getElementById('leaderboardPanel');
+  document.getElementById('leaderboardToggleBtn').addEventListener('click', () => {
+    leaderboardPanel.classList.toggle('open');
+  });
+  document.getElementById('leaderboardCloseBtn').addEventListener('click', () => {
+    leaderboardPanel.classList.remove('open');
+  });
+</script>
+
+<script type="module" src="leaderboard.js"></script>
 <script type="module" src="config.js"></script>
 <script type="module" src="app.js"></script>
 </body>
