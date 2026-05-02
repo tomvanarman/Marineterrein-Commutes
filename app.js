@@ -3,6 +3,7 @@
 // Loads live GeoJSON from Supabase Edge Function — no PMTiles download needed.
 
 import { CONFIG } from './config.js';
+import { buildLeaderboard, renderLeaderboard } from './leaderboard.js';
 
 console.log('🚀 Starting bike visualization...');
 const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImZhODc1ZmQ3ODRmOTQ3MTNiNWRmMGY2NTcwYjM0YTVjIiwiaCI6Im11cm11cjY0In0=';
@@ -441,21 +442,11 @@ map.on('load', async () => {
   await loadMetadata();
 
   try {
-    // Fetch live GeoJSON from Supabase edge function
     const geojson = await loadTripsGeoJSON();
 
-    import { buildLeaderboard, renderLeaderboard } from './leaderboard.js';
-
-    // After fetching trips.geojson:
-    fetch('trips.geojson')
-      .then(r => r.json())
-      .then(data => {
-        // ... your existing map setup code ...
-
-        // Add leaderboard
-        const sensors = buildLeaderboard(data.features);
-        renderLeaderboard(sensors);
-      });
+    // Build leaderboard from loaded GeoJSON data
+    const sensors = buildLeaderboard(geojson.features);
+    renderLeaderboard(sensors);
 
     // Extract unique trip IDs
     tripIds = [...new Set((geojson.features || []).map(f => f.properties.trip_id).filter(Boolean))].sort();
