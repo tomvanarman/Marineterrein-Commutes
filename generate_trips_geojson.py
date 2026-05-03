@@ -4,7 +4,7 @@ generate_trips_geojson.py
 
 Builds trips.geojson by merging two sources:
   1. Existing processed_sensor_data/ files (wheel-rotation speed, best quality)
-  2. New trips fetched from Supabase (gnss.speed in km/h, ~1754 pts/trip)
+  2. New trips fetched from Supabase (gnss.speed in km/h, ~1700 pts/trip)
 
 Local processed files take priority — if a trip_id exists in both,
 the local version wins.
@@ -179,8 +179,8 @@ def compute_road_quality_lookup(raw_rows, raw_cols, d1_rows, d1_cols):
     if not ROAD_QUALITY_AVAILABLE or not raw_rows or len(raw_rows) < 200:
         return None
 
-    raw  = [dict(zip(raw_cols, r)) for r in raw_rows]
-    d1   = [dict(zip(d1_cols, r)) for r in d1_rows]
+    raw = [dict(zip(raw_cols, r)) for r in raw_rows]
+    d1  = [dict(zip(d1_cols,  r)) for r in d1_rows]
 
     if not d1:
         return None
@@ -208,9 +208,8 @@ def compute_road_quality_lookup(raw_rows, raw_cols, d1_rows, d1_cols):
         return None
 
     quality_scores = rq_data["road_quality"]
-    # Map window indices back to timestamps
-    time_windows = rq_data["time_windows"]
-    window_ts = [interp_ts(int(w)) for w in time_windows]
+    time_windows   = rq_data["time_windows"]
+    window_ts      = [interp_ts(int(w)) for w in time_windows]
 
     def lookup(ts):
         if not window_ts:
@@ -260,7 +259,7 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
                      d1_rows, d1_cols, trip_id, db_trip_id, wheel_diam_mm):
     """
     One LineString per consecutive gnss point pair.
-    Speed = smoothed gnss.speed (already km/h), capped at MAX_SPEED_KMH.
+    Speed = smoothed gnss.speed (already in km/h), capped at MAX_SPEED_KMH.
     Road quality from decoded acc_y via timestamp lookup.
     """
     if not gnss_rows:
@@ -271,7 +270,7 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
     if len(trimmed) < 2:
         return []
 
-    # Smoothed speeds (5-point rolling average)
+    # 5-point rolling average to smooth GPS speed noise
     raw_speeds = [min(float(r["speed"] or 0), MAX_SPEED_KMH) for r in trimmed]
     smoothed   = []
     w          = SPEED_SMOOTH_WIN
