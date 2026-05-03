@@ -33,7 +33,7 @@ jobs:
         run: python generate_trips_geojson.py
 
       - name: Generate road_segments_averaged.json
-        run: python road_segments_averaged.py
+        run: python road_averaging.py
 
       - name: Commit and push if changed
         run: |
