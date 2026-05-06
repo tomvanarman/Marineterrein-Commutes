@@ -692,7 +692,7 @@ input[type="range"] {
   position: absolute;
   top: 12px;
   right: 60px;
-  z-index: 200;
+  z-index: 10;
   background: rgba(10, 20, 30, 0.85);
   color: #00e5cc;
   border: 1px solid #00e5cc44;
@@ -715,7 +715,7 @@ input[type="range"] {
   position: absolute;
   top: 48px;
   right: 12px;
-  z-index: 199;
+  z-index: 10;
   width: 260px;
   background: rgba(8, 16, 24, 0.92);
   border: 1px solid #00e5cc33;
@@ -822,7 +822,7 @@ input[type="range"] {
   top: 14px;
   left: 10px;
   transform: none;
-  z-index: 201;
+  z-index: 9999;
   writing-mode: horizontal-tb;
   text-orientation: mixed;
   background: var(--sc-panel-bg);
@@ -854,7 +854,7 @@ input[type="range"] {
 #mapContainer:-moz-full-screen #controlsTab,
 #mapContainer:-ms-fullscreen #controlsTab {
   display: flex;
-  z-index: 201;
+  z-index: 9999;
   position: fixed;
   top: 14px;
   left: 10px;
