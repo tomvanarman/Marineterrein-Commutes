@@ -814,39 +814,49 @@ input[type="range"] {
 }
 
 /* ── Controls tab (mobile slide-out handle) ──────────────────
-   FIX: Base styles are declared HERE, before the @media block,
-   so the media query's display:flex is not overridden by a
-   later rule. The tab is hidden on desktop by default. */
+   Positioned top-left with spacing. Horizontal pill button.
+   Uses position:fixed so it persists in fullscreen too.     */
 #controlsTab {
   display: none; /* hidden on desktop; shown via media query below */
   position: fixed;
-  top: 50%;
-  left: 0;
-  transform: translateY(-50%);
-  z-index: 101;
-  writing-mode: vertical-rl;
+  top: 14px;
+  left: 10px;
+  transform: none;
+  z-index: 102;
+  writing-mode: horizontal-tb;
   text-orientation: mixed;
   background: var(--sc-panel-bg);
   border: 1px solid var(--sc-panel-border);
-  border-left: none;
-  border-radius: 0 6px 6px 0;
-  padding: 12px 7px;
+  border-radius: 6px;
+  padding: 8px 14px;
   font-family: 'Rajdhani', sans-serif;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--sc-cyan);
   cursor: pointer;
   backdrop-filter: blur(14px);
   transition: background 0.2s, left 0.3s ease;
   user-select: none;
+  white-space: nowrap;
 }
 #controlsTab.open {
-  left: 260px;
+  left: 270px;
 }
 #controlsTab:hover {
   background: rgba(52, 204, 204, 0.12);
+}
+
+/* Keep tab visible when the map container enters fullscreen */
+#mapContainer:fullscreen #controlsTab,
+#mapContainer:-webkit-full-screen #controlsTab,
+#mapContainer:-moz-full-screen #controlsTab,
+#mapContainer:-ms-fullscreen #controlsTab {
+  display: flex;
+  position: fixed;
+  top: 14px;
+  left: 10px;
 }
 
 /* ── Mobile ──────────────────────────────────────────────────

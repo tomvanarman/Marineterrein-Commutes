@@ -208,19 +208,53 @@ function currentColorExpression() {
   return getSensorColorExpression();
 }
 
+// ─── Returns the set of trip IDs currently highlighted (selected trip,
+//     selected sensor group, or null for "all"). Used to scope layer colours.
+function getSelectedTripIds() {
+  if (!activeFilter) return null;
+  // activeFilter is set to a single tripId in applyTripFilter,
+  // or to an array of ids in applyGroupFilter.
+  return Array.isArray(activeFilter) ? activeFilter : [activeFilter];
+}
+
+// ─── Builds a colour expression that shows the given colour only for
+//     selectedIds, and hides everything else as fully transparent.
+//     When selectedIds is null all features are shown.
+function buildFilteredColorExpression(baseExpr, selectedIds) {
+  if (!selectedIds || selectedIds.length === 0) return baseExpr;
+  return [
+    'case',
+    ['in', ['get', 'trip_id'], ['literal', selectedIds]],
+    baseExpr,
+    'rgba(0,0,0,0)'          // hide non-selected features completely
+  ];
+}
+
 function applyTripFilter(filterTripId) {
   activeFilter = filterTripId;
   if (!map.getLayer('trips-layer')) return;
 
   if (filterTripId) {
+    // Determine base colour for the highlighted trips:
+    // respect whichever data layer is active, or fall back to pink highlight.
+    let highlightColor;
+    if (showSpeedColors) {
+      highlightColor = getSpeedColorExpression(speedMode);
+    } else if (showRoadQuality) {
+      highlightColor = getRoadQualityColorExpression();
+    } else {
+      highlightColor = '#FF69B4';
+    }
+
     map.setPaintProperty('trips-layer', 'line-color', [
       'case',
-      ['==', ['get', 'trip_id'], filterTripId], '#FF69B4',
-      'rgba(255,255,255,0.08)'
+      ['==', ['get', 'trip_id'], filterTripId],
+      highlightColor,
+      'rgba(0,0,0,0)'        // completely hide other trips
     ]);
     map.setPaintProperty('trips-layer', 'line-opacity', 1);
     map.setPaintProperty('trips-layer', 'line-width', [
-      'case', ['==', ['get', 'trip_id'], filterTripId], 4, 1
+      'case', ['==', ['get', 'trip_id'], filterTripId], 4, 0
     ]);
   } else {
     map.setPaintProperty('trips-layer', 'line-color', currentColorExpression());
@@ -230,16 +264,28 @@ function applyTripFilter(filterTripId) {
 }
 
 function applyGroupFilter(matchingIds) {
+  activeFilter = matchingIds;          // store array so speed/quality can scope to it
   if (!map.getLayer('trips-layer')) return;
   const set = new Set(matchingIds);
+
+  let highlightColor;
+  if (showSpeedColors) {
+    highlightColor = getSpeedColorExpression(speedMode);
+  } else if (showRoadQuality) {
+    highlightColor = getRoadQualityColorExpression();
+  } else {
+    highlightColor = '#FF69B4';
+  }
+
   map.setPaintProperty('trips-layer', 'line-color', [
     'case',
-    ['in', ['get', 'trip_id'], ['literal', [...set]]], '#FF69B4',
-    'rgba(255,255,255,0.08)'
+    ['in', ['get', 'trip_id'], ['literal', [...set]]],
+    highlightColor,
+    'rgba(0,0,0,0)'          // completely hide non-matching trips
   ]);
   map.setPaintProperty('trips-layer', 'line-opacity', 1);
   map.setPaintProperty('trips-layer', 'line-width', [
-    'case', ['in', ['get', 'trip_id'], ['literal', [...set]]], 4, 1
+    'case', ['in', ['get', 'trip_id'], ['literal', [...set]]], 4, 0
   ]);
 }
 
@@ -301,6 +347,7 @@ function resetSelection() {
 function clearSearch() {
   searchActive = false;
   selectedTrip = null;
+  activeFilter = null;
   const input    = document.getElementById('tripSearchInput');
   const clearBtn = document.getElementById('tripClearButton');
   if (input)    input.value = '';
@@ -639,6 +686,45 @@ function setupAveragedSegmentControls() {
   });
 }
 
+// ─── Re-applies whichever colour layer is active, scoped to any current
+//     selection. Call this whenever showSpeedColors / showRoadQuality changes
+//     while a filter is already active.
+function refreshTripLayerColor() {
+  if (!map.getLayer('trips-layer')) return;
+
+  const selectedIds = getSelectedTripIds();
+
+  if (!selectedIds) {
+    // No selection — paint everything normally
+    map.setPaintProperty('trips-layer', 'line-color', currentColorExpression());
+    map.setPaintProperty('trips-layer', 'line-opacity', 0.7);
+    map.setPaintProperty('trips-layer', 'line-width', 3);
+    return;
+  }
+
+  // Selection is active — show data colour only for selected, hide the rest
+  const baseExpr = currentColorExpression();
+  const isSingle = selectedIds.length === 1;
+
+  map.setPaintProperty('trips-layer', 'line-color', [
+    'case',
+    isSingle
+      ? ['==', ['get', 'trip_id'], selectedIds[0]]
+      : ['in', ['get', 'trip_id'], ['literal', selectedIds]],
+    baseExpr,
+    'rgba(0,0,0,0)'
+  ]);
+  map.setPaintProperty('trips-layer', 'line-opacity', 1);
+  map.setPaintProperty('trips-layer', 'line-width', [
+    'case',
+    isSingle
+      ? ['==', ['get', 'trip_id'], selectedIds[0]]
+      : ['in', ['get', 'trip_id'], ['literal', selectedIds]],
+    4,
+    0
+  ]);
+}
+
 function setupControls() {
   const resetBtn = document.getElementById('resetButton');
   if (resetBtn) resetBtn.addEventListener('click', resetSelection);
@@ -698,14 +784,14 @@ function setupControls() {
       const legend    = document.getElementById('speedLegend');
       const modeGroup = document.getElementById('speedModeGroup');
       if (showSpeedColors) {
-        map.setPaintProperty('trips-layer', 'line-color', getSpeedColorExpression(speedMode));
         if (legend)    legend.style.display    = 'block';
         if (modeGroup) modeGroup.style.display = 'flex';
       } else {
-        map.setPaintProperty('trips-layer', 'line-color', getSensorColorExpression());
         if (legend)    legend.style.display    = 'none';
         if (modeGroup) modeGroup.style.display = 'none';
       }
+      // KEY FIX: always go through refreshTripLayerColor so selection scope is respected
+      refreshTripLayerColor();
       updateResetButtonVisibility();
       setTimeout(updateLegendPositions, 50);
       updateStatsVisibility();
@@ -725,12 +811,12 @@ function setupControls() {
       }
       const legend = document.getElementById('roadQualityLegend');
       if (showRoadQuality) {
-        map.setPaintProperty('trips-layer', 'line-color', getRoadQualityColorExpression());
         if (legend) legend.style.display = 'block';
       } else {
-        map.setPaintProperty('trips-layer', 'line-color', getSensorColorExpression());
         if (legend) legend.style.display = 'none';
       }
+      // KEY FIX: always go through refreshTripLayerColor so selection scope is respected
+      refreshTripLayerColor();
       updateResetButtonVisibility();
       updateLegendPositions();
       updateStatsVisibility();
@@ -740,7 +826,7 @@ function setupControls() {
   document.querySelectorAll('input[name="speedMode"]').forEach(r => {
     r.addEventListener('change', e => {
       speedMode = e.target.value;
-      if (showSpeedColors) map.setPaintProperty('trips-layer', 'line-color', getSpeedColorExpression(speedMode));
+      if (showSpeedColors) refreshTripLayerColor();
     });
   });
 
