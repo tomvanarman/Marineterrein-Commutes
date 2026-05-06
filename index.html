@@ -418,6 +418,7 @@
     const isOpen = controlsPanel.classList.toggle('open');
     controlsTab.classList.toggle('open', isOpen);
     controlsTab.textContent = isOpen ? '✕' : 'Filters';
+    mapContainer.classList.toggle('filters-open', isOpen);
   });
 
   // ── Legend switching for averaged segments ────────────────────

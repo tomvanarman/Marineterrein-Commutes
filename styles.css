@@ -900,3 +900,12 @@ input[type="range"] {
     right: -100%;
   }
 }
+
+
+/* ── Hide leaderboard button when filters panel is open on mobile ────────────
+   Applied via JS by toggling .panel-open on #mapContainer.                   */
+@media (max-width: 900px) {
+  #mapContainer.filters-open #leaderboardToggleBtn {
+    display: none;
+  }
+}
