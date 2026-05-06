@@ -822,7 +822,7 @@ input[type="range"] {
   top: 14px;
   left: 10px;
   transform: none;
-  z-index: 102;
+  z-index: 201;
   writing-mode: horizontal-tb;
   text-orientation: mixed;
   background: var(--sc-panel-bg);
@@ -842,7 +842,7 @@ input[type="range"] {
   white-space: nowrap;
 }
 #controlsTab.open {
-  left: 270px;
+  left: 264px;
 }
 #controlsTab:hover {
   background: rgba(52, 204, 204, 0.12);
@@ -854,6 +854,7 @@ input[type="range"] {
 #mapContainer:-moz-full-screen #controlsTab,
 #mapContainer:-ms-fullscreen #controlsTab {
   display: flex;
+  z-index: 201;
   position: fixed;
   top: 14px;
   left: 10px;
