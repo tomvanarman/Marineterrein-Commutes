@@ -539,7 +539,9 @@ input[type="range"] {
   border-color: var(--sc-cyan);
 }
 
-/* Manual Panel */
+/* Manual Panel
+   FIX: z-index raised to 210 so it slides over the leaderboard button (z-index 200)
+   when opened, preventing the button from floating awkwardly on top. */
 #manualPanel {
   position: absolute;
   top: 0;
@@ -551,7 +553,7 @@ input[type="range"] {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   box-shadow: -2px 0 10px rgba(0,0,0,0.25);
-  z-index: 3;
+  z-index: 210;
   display: flex;
   flex-direction: column;
   transition: right 0.3s ease;
@@ -685,82 +687,6 @@ input[type="range"] {
   backdrop-filter: blur(16px);
 }
 
-/* ── Mobile ──────────────────────────────────────────────────── */
-@media (max-width: 768px) {
-
-  /* Controls panel: collapsed off-screen by default,
-     slides in when .open is toggled by the tab button */
-  #controls {
-    position: fixed;
-    top: 0;
-    left: -290px;
-    height: 100%;
-    max-height: 100%;
-    min-width: 260px;
-    border-radius: 0;
-    z-index: 100;
-    transition: left 0.3s ease;
-    overflow-y: auto;
-  }
-  #controls.open {
-    left: 0;
-  }
-
-  /* Tab button that peeks out from the left edge */
-  #controlsTab {
-    display: flex;
-  }
-
-  #stats,
-  .legend {
-    font-size: 12px;
-    max-width: 200px;
-  }
-
-  #manualPanel {
-    width: 100%;
-    right: -100%;
-  }
-}
-
-/* Controls tab — hidden on desktop, shown on mobile via the rule above */
-#controlsTab {
-  display: none;
-  position: fixed;
-  top: 50%;
-  left: 0;
-  transform: translateY(-50%);
-  z-index: 101;
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  background: var(--sc-panel-bg);
-  border: 1px solid var(--sc-panel-border);
-  border-left: none;
-  border-radius: 0 6px 6px 0;
-  padding: 12px 7px;
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--sc-cyan);
-  cursor: pointer;
-  backdrop-filter: blur(14px);
-  transition: background 0.2s, left 0.3s ease;
-  user-select: none;
-}
-#controlsTab.open {
-  left: 260px;
-}
-#controlsTab:hover {
-  background: rgba(52, 204, 204, 0.12);
-}
-
-.iso-spacing {
-  margin-top: 5px;
-  margin-bottom: -10px;
-}
-
 /* ── Leaderboard Button ─────────────────────────────────────── */
 #leaderboardToggleBtn {
   position: absolute;
@@ -885,4 +811,81 @@ input[type="range"] {
   font-size: 11px;
   color: #00e5cc;
   flex-shrink: 0;
+}
+
+/* ── Controls tab (mobile slide-out handle) ──────────────────
+   FIX: Base styles are declared HERE, before the @media block,
+   so the media query's display:flex is not overridden by a
+   later rule. The tab is hidden on desktop by default. */
+#controlsTab {
+  display: none; /* hidden on desktop; shown via media query below */
+  position: fixed;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  z-index: 101;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  background: var(--sc-panel-bg);
+  border: 1px solid var(--sc-panel-border);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  padding: 12px 7px;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--sc-cyan);
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+  transition: background 0.2s, left 0.3s ease;
+  user-select: none;
+}
+#controlsTab.open {
+  left: 260px;
+}
+#controlsTab:hover {
+  background: rgba(52, 204, 204, 0.12);
+}
+
+/* ── Mobile ──────────────────────────────────────────────────
+   FIX: Threshold raised from 768px to 900px for broader
+   mobile/tablet coverage. Controls offscreen offset matched
+   to panel width so it fully hides. */
+@media (max-width: 900px) {
+
+  /* Controls panel: collapsed off-screen by default,
+     slides in when .open is toggled by the tab button */
+  #controls {
+    position: fixed;
+    top: 0;
+    left: -280px;
+    height: 100%;
+    max-height: 100%;
+    min-width: 260px;
+    border-radius: 0;
+    z-index: 100;
+    transition: left 0.3s ease;
+    overflow-y: auto;
+  }
+  #controls.open {
+    left: 0;
+  }
+
+  /* Show the tab handle on mobile */
+  #controlsTab {
+    display: flex;
+  }
+
+  #stats,
+  .legend {
+    font-size: 12px;
+    max-width: 200px;
+  }
+
+  #manualPanel {
+    width: 100%;
+    right: -100%;
+  }
 }
