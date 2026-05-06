@@ -16,22 +16,19 @@
 <body>
 <div id="mapContainer">
   <button id="fullscreenBtn" title="Toggle Fullscreen">⛶</button>
-  
+
   <!-- Manual Toggle Button -->
   <button id="manualToggleBtn" title="Open User Manual">
     📘 Manual
   </button>
 
-    <!-- Sliding Manual Panel -->
+  <!-- Sliding Manual Panel -->
   <div id="manualPanel">
-
     <div class="manual-header">
       <h3>Cycling Behaviour Dashboard</h3>
       <button id="manualCloseBtn" title="Close Manual">✕</button>
     </div>
-
     <div class="manual-content">
-
       <section>
         <h4>Purpose of the Dashboard</h4>
         <p>
@@ -44,7 +41,6 @@
           with aggregated road segment analysis.
         </p>
       </section>
-
       <section>
         <h4>How to Read the Map</h4>
         <p>
@@ -52,35 +48,29 @@
           Each layer has its own scale, legend, and policy interpretation.
         </p>
       </section>
-
       <section>
         <h4>Available Data Layers</h4>
-
         <h5>Speed</h5>
         <p>
           Displays average cycling speed across recorded trips, supporting the
           identification of slow or fast corridors.
         </p>
-
         <h5>Road Quality</h5>
         <p>
           Based on third-party infrastructure data, categorised from "Perfect" to
           "No road", supporting infrastructure assessment and maintenance planning.
         </p>
-
         <h5>Averaged Road Segments</h5>
         <p>
           Aggregates speed and road quality into averaged scores per road segment,
           supporting corridor-level analysis.
         </p>
-
         <h5>Composite Score (Quality + Speed)</h5>
         <p>
           Within the averaged road segments, you'll see a subfilter which combines infrastructure
           condition and cycling performance into a single indicator for comparative assessment.
         </p>
       </section>
-
       <section>
         <h4>Using Filters and Interpretations</h4>
         <p>
@@ -92,7 +82,6 @@
           exploratory, policy-driven analysis.
         </p>
       </section>
-
       <section>
         <h4>Responsible Use</h4>
         <p>
@@ -101,10 +90,8 @@
           knowledge of street design, traffic conditions, and policy objectives.
         </p>
       </section>
-
-    </div> <!-- closes .manual-content -->
-
-  </div> <!-- closes #manualPanel -->
+    </div>
+  </div>
 
   <!-- Leaderboard Toggle Button -->
   <button id="leaderboardToggleBtn" title="Sensor Leaderboard">
@@ -130,9 +117,16 @@
         <div class="leaderboard-section-title">Most Stops</div>
         <ol id="lbStops" class="leaderboard-list"></ol>
       </div>
+      <div class="leaderboard-section">
+        <div class="leaderboard-section-title">Top Speed</div>
+        <ol id="lbSpeed" class="leaderboard-list"></ol>
+      </div>
     </div>
   </div>
-  
+
+  <!-- Mobile slide-out tab for controls panel -->
+  <div id="controlsTab">Filters</div>
+
   <div id="map"></div>
 
   <div id="controls">
@@ -151,14 +145,14 @@
         <ul id="searchSuggestions"></ul>
       </div>
     </div>
-    
+
     <div class="control-group">
       <label class="checkbox-label">
         <input type="checkbox" id="speedColorsCheckbox">
         Speed
       </label>
     </div>
-    
+
     <div class="radio-group" id="speedModeGroup">
       <label class="radio-label">
         <input type="radio" name="speedMode" value="gradient" checked>
@@ -297,7 +291,7 @@
 
   <div class="legend" id="averagedSegmentsLegend">
     <h4>Averaged Road Segments</h4>
-    
+
     <!-- Composite Score Legend (default) -->
     <div id="compositeLegendItems">
       <p class="legend-note">Combined score based on quality and speed</p>
@@ -322,7 +316,7 @@
         <span>Critical (80-100)</span>
       </div>
     </div>
-    
+
     <!-- Speed Legend -->
     <div id="avgSpeedLegendItems">
       <div class="speed-legend-item">
@@ -350,7 +344,7 @@
         <span>Extreme (25+ km/h)</span>
       </div>
     </div>
-    
+
     <!-- Quality Legend -->
     <div id="avgQualityLegendItems">
       <div class="speed-legend-item">
@@ -383,94 +377,61 @@
 </div>
 
 <script>
-  // Fullscreen functionality
-  const fullscreenBtn = document.getElementById('fullscreenBtn');
-  const mapContainer = document.getElementById('mapContainer');
-  
+  // ── Fullscreen ────────────────────────────────────────────────
+  const fullscreenBtn  = document.getElementById('fullscreenBtn');
+  const mapContainer   = document.getElementById('mapContainer');
+
   fullscreenBtn.addEventListener('click', () => {
-    if (!document.fullscreenElement && 
-        !document.webkitFullscreenElement && 
-        !document.mozFullScreenElement && 
+    if (!document.fullscreenElement &&
+        !document.webkitFullscreenElement &&
+        !document.mozFullScreenElement &&
         !document.msFullscreenElement) {
-      if (mapContainer.requestFullscreen) {
-        mapContainer.requestFullscreen();
-      } else if (mapContainer.webkitRequestFullscreen) {
-        mapContainer.webkitRequestFullscreen();
-      } else if (mapContainer.mozRequestFullScreen) {
-        mapContainer.mozRequestFullScreen();
-      } else if (mapContainer.msRequestFullscreen) {
-        mapContainer.msRequestFullscreen();
-      }
-      fullscreenBtn.textContent = '⛶';
+      (mapContainer.requestFullscreen || mapContainer.webkitRequestFullscreen ||
+       mapContainer.mozRequestFullScreen || mapContainer.msRequestFullscreen).call(mapContainer);
     } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      } else if (document.webkitExitFullscreen) {
-        document.webkitExitFullscreen();
-      } else if (document.mozCancelFullScreen) {
-        document.mozCancelFullScreen();
-      } else if (document.msExitFullscreen) {
-        document.msExitFullscreen();
-      }
-      fullscreenBtn.textContent = '⛶';
+      (document.exitFullscreen || document.webkitExitFullscreen ||
+       document.mozCancelFullScreen || document.msExitFullscreen).call(document);
     }
   });
-  
-  document.addEventListener('fullscreenchange', updateFullscreenButton);
-  document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
-  document.addEventListener('mozfullscreenchange', updateFullscreenButton);
-  document.addEventListener('MSFullscreenChange', updateFullscreenButton);
-  
+
   function updateFullscreenButton() {
-    if (document.fullscreenElement || 
-        document.webkitFullscreenElement || 
-        document.mozFullScreenElement || 
-        document.msFullscreenElement) {
-      fullscreenBtn.textContent = '⛶';
-      fullscreenBtn.title = 'Exit Fullscreen';
-    } else {
-      fullscreenBtn.textContent = '⛶';
-      fullscreenBtn.title = 'Enter Fullscreen';
-    }
+    const isFS = document.fullscreenElement || document.webkitFullscreenElement ||
+                 document.mozFullScreenElement || document.msFullscreenElement;
+    fullscreenBtn.title = isFS ? 'Exit Fullscreen' : 'Enter Fullscreen';
   }
+  document.addEventListener('fullscreenchange',       updateFullscreenButton);
+  document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+  document.addEventListener('mozfullscreenchange',    updateFullscreenButton);
+  document.addEventListener('MSFullscreenChange',     updateFullscreenButton);
 
-  // Manual toggle interaction
-  const manualPanel = document.getElementById('manualPanel');
+  // ── Manual panel ──────────────────────────────────────────────
+  const manualPanel     = document.getElementById('manualPanel');
   const manualToggleBtn = document.getElementById('manualToggleBtn');
-  const manualCloseBtn = document.getElementById('manualCloseBtn');
-  
-  manualToggleBtn.addEventListener('click', () => {
-    manualPanel.classList.toggle('open');
-  });
-  
-  manualCloseBtn.addEventListener('click', () => {
-    manualPanel.classList.remove('open');
+  const manualCloseBtn  = document.getElementById('manualCloseBtn');
+  manualToggleBtn.addEventListener('click', () => manualPanel.classList.toggle('open'));
+  manualCloseBtn.addEventListener('click',  () => manualPanel.classList.remove('open'));
+
+  // ── Mobile controls tab ───────────────────────────────────────
+  const controlsPanel = document.getElementById('controls');
+  const controlsTab   = document.getElementById('controlsTab');
+  controlsTab.addEventListener('click', () => {
+    const isOpen = controlsPanel.classList.toggle('open');
+    controlsTab.classList.toggle('open', isOpen);
+    controlsTab.textContent = isOpen ? '✕' : 'Filters';
   });
 
-  // Handle legend switching for averaged segments
+  // ── Legend switching for averaged segments ────────────────────
   document.querySelectorAll('input[name="averagedMode"]').forEach(radio => {
     radio.addEventListener('change', (e) => {
-      const mode = e.target.value;
-      
-      // Hide all legend items
       document.getElementById('compositeLegendItems').style.display = 'none';
-      document.getElementById('avgSpeedLegendItems').style.display = 'none';
+      document.getElementById('avgSpeedLegendItems').style.display  = 'none';
       document.getElementById('avgQualityLegendItems').style.display = 'none';
-      
-      // Show relevant legend
-      if (mode === 'composite') {
-        document.getElementById('compositeLegendItems').style.display = 'block';
-      } else if (mode === 'speed') {
-        document.getElementById('avgSpeedLegendItems').style.display = 'block';
-      } else if (mode === 'quality') {
-        document.getElementById('avgQualityLegendItems').style.display = 'block';
-      }
+      const map = { composite: 'compositeLegendItems', speed: 'avgSpeedLegendItems', quality: 'avgQualityLegendItems' };
+      document.getElementById(map[e.target.value]).style.display = 'block';
     });
   });
-</script>
 
-<script>
-  // Leaderboard toggle
+  // ── Leaderboard toggle ────────────────────────────────────────
   const leaderboardPanel = document.getElementById('leaderboardPanel');
   document.getElementById('leaderboardToggleBtn').addEventListener('click', () => {
     leaderboardPanel.classList.toggle('open');
