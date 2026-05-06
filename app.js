@@ -19,7 +19,7 @@ const map = new mapboxgl.Map({
 window.map = map;
 
 // ─── State ────────────────────────────────────────────────────────────────────
-let tripIds = [];                       // All unique trip_id strings in the loaded GeoJSON
+let tripIds = [];
 let speedMode = 'gradient';
 let showSpeedColors = false;
 let showRoadQuality = false;
@@ -29,7 +29,7 @@ let currentPopup = null;
 let showAveragedSegments = false;
 let averagedSegmentMode = 'composite';
 let searchActive = false;
-let activeFilter = null;                // trip_id string currently highlighted, or null
+let activeFilter = null;
 
 // ─── Sensor colours ───────────────────────────────────────────────────────────
 const SENSOR_COLORS = [
@@ -65,10 +65,8 @@ function getRoadQualityColorExpression() {
   return ['match', ['get', 'road_quality'], 1,'#22C55E', 2,'#84CC16', 3,'#FACC15', 4,'#F97316', 5,'#DC2626', '#808080'];
 }
 
-// Sensor-colour expression based on trip_id property in each feature
 function getSensorColorExpression() {
   const fallback = DEFAULT_COLOR;
-  // Build a match expression: ['match', ['get', 'trip_id'], 'A', '#color', 'B', '#color', fallback]
   const pairs = tripIds.flatMap(id => [id, getSensorColor(id)]);
   if (pairs.length === 0) return fallback;
   return ['match', ['get', 'trip_id'], ...pairs, fallback];
@@ -118,13 +116,8 @@ async function loadMetadata() {
 }
 
 async function loadTripsGeoJSON() {
-  // trips.geojson is pre-built by generate_trips_geojson.py which merges:
-  //   - processed_sensor_data/ (real road quality + wheel speed)
-  //   - Supabase API trips (GPS speed, road_quality=0)
-  // Regenerate it locally whenever you have new data, then commit + push.
   const loadingEl = document.getElementById('loadingIndicator');
   if (loadingEl) loadingEl.style.display = 'block';
-
   try {
     const r = await fetch('./trips.geojson');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -202,22 +195,16 @@ function formatDuration(s) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function calculateAggregateStats() {
-  if (!tripsMetadata) return null;
-  let totalDist = 0, totalTime = 0, totalAvg = 0, count = 0;
-  Object.keys(tripsMetadata).forEach(id => {
-    const s = getTripStats(id);
-    if (s) { totalDist += s.distance; totalTime += parseDurationToSeconds(s.duration); totalAvg += s.avgSpeed; count++; }
-  });
-  return count > 0 ? { tripCount: count, totalDistance: totalDist.toFixed(1), totalTime: formatDuration(totalTime), avgSpeed: (totalAvg / count).toFixed(1) } : null;
+// ─── Reset button visibility ──────────────────────────────────────────────────
+function updateResetButtonVisibility() {
+  const active = showSpeedColors || showRoadQuality || showAveragedSegments || searchActive || !!selectedTrip;
+  document.getElementById('resetButton').style.display = active ? 'block' : 'none';
 }
 
 // ─── Layer paint helpers ──────────────────────────────────────────────────────
-
-// Return the correct line-color expression given current UI state and optional trip filter
-function currentColorExpression(forTripId = null) {
-  if (showSpeedColors)  return getSpeedColorExpression(speedMode);
-  if (showRoadQuality)  return getRoadQualityColorExpression();
+function currentColorExpression() {
+  if (showSpeedColors) return getSpeedColorExpression(speedMode);
+  if (showRoadQuality) return getRoadQualityColorExpression();
   return getSensorColorExpression();
 }
 
@@ -226,7 +213,6 @@ function applyTripFilter(filterTripId) {
   if (!map.getLayer('trips-layer')) return;
 
   if (filterTripId) {
-    // Highlight matching trips, fade the rest
     map.setPaintProperty('trips-layer', 'line-color', [
       'case',
       ['==', ['get', 'trip_id'], filterTripId], '#FF69B4',
@@ -259,53 +245,93 @@ function applyGroupFilter(matchingIds) {
 
 // ─── Selection / search ───────────────────────────────────────────────────────
 function resetSelection() {
-  selectedTrip = null;
-  activeFilter = null;
-  searchActive = false;
+  selectedTrip      = null;
+  activeFilter      = null;
+  searchActive      = false;
+  showSpeedColors   = false;
+  showRoadQuality   = false;
+  showAveragedSegments = false;
 
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
 
-  document.getElementById('resetButton').style.display = 'none';
-  document.getElementById('selectedTripRow').style.display = 'none';
-  document.getElementById('statTripRow').style.display = 'flex';
-  document.getElementById('statDistanceRow').style.display = 'flex';
-  document.getElementById('statAvgSpeedRow').style.display = 'flex';
+  // Uncheck all filter checkboxes
+  const speedCb   = document.getElementById('speedColorsCheckbox');
+  const qualityCb = document.getElementById('roadQualityCheckbox');
+  const avgCb     = document.getElementById('averagedSegmentsCheckbox');
+  if (speedCb)   speedCb.checked   = false;
+  if (qualityCb) qualityCb.checked = false;
+  if (avgCb)     avgCb.checked     = false;
+
+  // Hide all legends and mode groups
+  document.getElementById('speedLegend').style.display            = 'none';
+  document.getElementById('speedModeGroup').style.display         = 'none';
+  document.getElementById('roadQualityLegend').style.display      = 'none';
+  document.getElementById('averagedSegmentsLegend').style.display = 'none';
+  document.getElementById('averagedModeGroup').style.display      = 'none';
+
+  // Restore layers
+  if (map.getLayer('averaged-segments'))
+    map.setLayoutProperty('averaged-segments', 'visibility', 'none');
+  if (map.getLayer('trips-layer')) {
+    map.setLayoutProperty('trips-layer', 'visibility', 'visible');
+    map.setPaintProperty('trips-layer', 'line-color', getSensorColorExpression());
+    map.setPaintProperty('trips-layer', 'line-opacity', 0.7);
+    map.setPaintProperty('trips-layer', 'line-width', 3);
+  }
+
+  // Clear search input
+  const searchInput = document.getElementById('tripSearchInput');
+  const clearBtn    = document.getElementById('tripClearButton');
+  if (searchInput) searchInput.value = '';
+  if (clearBtn)    clearBtn.style.display = 'none';
+
+  // Restore stats panel
+  document.getElementById('selectedTripRow').style.display  = 'none';
+  document.getElementById('statTripRow').style.display      = 'flex';
+  document.getElementById('statDistanceRow').style.display  = 'flex';
+  document.getElementById('statAvgSpeedRow').style.display  = 'flex';
   document.getElementById('statTotalTimeRow').style.display = 'flex';
+
+  updateResetButtonVisibility();
+  setTimeout(updateLegendPositions, 50);
+  updateStatsVisibility();
 }
 
 function clearSearch() {
   searchActive = false;
   selectedTrip = null;
-  const input = document.getElementById('tripSearchInput');
+  const input    = document.getElementById('tripSearchInput');
   const clearBtn = document.getElementById('tripClearButton');
-  if (input) input.value = '';
+  if (input)    input.value = '';
   if (clearBtn) clearBtn.style.display = 'none';
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
-  document.getElementById('resetButton').style.display = 'none';
-  document.getElementById('selectedTripRow').style.display = 'none';
-  document.getElementById('statTripRow').style.display = 'flex';
-  document.getElementById('statDistanceRow').style.display = 'flex';
-  document.getElementById('statAvgSpeedRow').style.display = 'flex';
+
+  document.getElementById('selectedTripRow').style.display  = 'none';
+  document.getElementById('statTripRow').style.display      = 'flex';
+  document.getElementById('statDistanceRow').style.display  = 'flex';
+  document.getElementById('statAvgSpeedRow').style.display  = 'flex';
   document.getElementById('statTotalTimeRow').style.display = 'flex';
+
+  updateResetButtonVisibility();
 }
 
 function showSelection(tripId) {
-  document.getElementById('resetButton').style.display = 'block';
-  document.getElementById('statTripRow').style.display = 'none';
-  document.getElementById('statDistanceRow').style.display = 'none';
-  document.getElementById('statAvgSpeedRow').style.display = 'none';
+  document.getElementById('statTripRow').style.display      = 'none';
+  document.getElementById('statDistanceRow').style.display  = 'none';
+  document.getElementById('statAvgSpeedRow').style.display  = 'none';
   document.getElementById('statTotalTimeRow').style.display = 'none';
-  document.getElementById('selectedTripRow').style.display = 'flex';
+  document.getElementById('selectedTripRow').style.display  = 'flex';
   const name = tripId.replace(/_/g, ' ').replace(/processed/gi, '').replace(/clean/gi, '').trim();
   document.getElementById('selectedTrip').textContent = name;
+  updateResetButtonVisibility();
 }
 
 function searchAndHighlightTrip(term) {
   if (!term) { resetSelection(); return; }
 
-  const q = term.toLowerCase().trim();
+  const q       = term.toLowerCase().trim();
   const matches = tripIds.filter(id => id.toLowerCase().includes(q));
 
   if (matches.length === 0) {
@@ -324,16 +350,15 @@ function searchAndHighlightTrip(term) {
   } else {
     selectedTrip = null;
     applyGroupFilter(matches);
-    document.getElementById('resetButton').style.display = 'block';
-    document.getElementById('statTripRow').style.display = 'none';
-    document.getElementById('statDistanceRow').style.display = 'none';
-    document.getElementById('statAvgSpeedRow').style.display = 'none';
+    document.getElementById('statTripRow').style.display      = 'none';
+    document.getElementById('statDistanceRow').style.display  = 'none';
+    document.getElementById('statAvgSpeedRow').style.display  = 'none';
     document.getElementById('statTotalTimeRow').style.display = 'none';
-    document.getElementById('selectedTripRow').style.display = 'flex';
+    document.getElementById('selectedTripRow').style.display  = 'flex';
     document.getElementById('selectedTrip').textContent = `${term.toUpperCase()} — ${matches.length} trips`;
+    updateResetButtonVisibility();
   }
 
-  // Zoom to matched features
   try {
     const features = map.querySourceFeatures('trips', {
       filter: ['in', ['get', 'trip_id'], ['literal', matches]]
@@ -352,7 +377,11 @@ function searchAndHighlightTrip(term) {
 // ─── Averaged segments ────────────────────────────────────────────────────────
 function updateAveragedSegmentColors() {
   if (!map.getLayer('averaged-segments')) return;
-  const exprs = { speed: getAveragedSpeedColorExpression(), quality: getAveragedQualityColorExpression(), composite: getCompositeScoreColorExpression() };
+  const exprs = {
+    speed:     getAveragedSpeedColorExpression(),
+    quality:   getAveragedQualityColorExpression(),
+    composite: getCompositeScoreColorExpression(),
+  };
   map.setPaintProperty('averaged-segments', 'circle-color', exprs[averagedSegmentMode]);
 }
 
@@ -372,9 +401,11 @@ async function setupAveragedSegments() {
     id: 'averaged-segments', type: 'circle', source: 'averaged-segments',
     layout: { visibility: 'none' },
     paint: {
-      'circle-color': getCompositeScoreColorExpression(),
-      'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 18, 13, 28, 16, 45],
-      'circle-blur': 1.2, 'circle-opacity': 0.6, 'circle-pitch-alignment': 'map'
+      'circle-color':             getCompositeScoreColorExpression(),
+      'circle-radius':            ['interpolate', ['linear'], ['zoom'], 10, 18, 13, 28, 16, 45],
+      'circle-blur':              1.2,
+      'circle-opacity':           0.6,
+      'circle-pitch-alignment':   'map',
     }
   });
 
@@ -382,7 +413,9 @@ async function setupAveragedSegments() {
     e.preventDefault();
     if (e.originalEvent) e.originalEvent.stopPropagation();
     const p = e.features[0].properties;
-    const qualityText = p.avg_quality ? `🛣️ Avg Quality: ${p.avg_quality} (${getQualityLabel(p.avg_quality)})` : '🛣️ Quality: No data';
+    const qualityText = p.avg_quality
+      ? `🛣️ Avg Quality: ${p.avg_quality} (${getQualityLabel(p.avg_quality)})`
+      : '🛣️ Quality: No data';
     new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(`
       <strong>📊 Averaged Road Segment</strong><br>
       🚴 Avg Speed: ${p.avg_speed} km/h<br>
@@ -444,51 +477,54 @@ map.on('load', async () => {
   try {
     const geojson = await loadTripsGeoJSON();
 
-    // Build leaderboard from loaded GeoJSON data
     const sensors = buildLeaderboard(geojson.features);
     renderLeaderboard(sensors);
 
-    // Extract unique trip IDs
     tripIds = [...new Set((geojson.features || []).map(f => f.properties.trip_id).filter(Boolean))].sort();
     console.log(`📊 ${tripIds.length} unique trips loaded`);
 
     buildSensorColorMap(tripIds);
 
-    // Single GeoJSON source + single line layer (filtered by expressions)
     map.addSource('trips', { type: 'geojson', data: geojson, attribution: 'Bike sensor data' });
-
     map.addLayer({
       id: 'trips-layer',
       type: 'line',
       source: 'trips',
       paint: {
-        'line-color': getSensorColorExpression(),
-        'line-width': 3,
-        'line-opacity': 0.7
+        'line-color':   getSensorColorExpression(),
+        'line-width':   3,
+        'line-opacity': 0.7,
       }
     });
 
-    // Click handler on the single layer
     map.on('click', 'trips-layer', async (e) => {
       e.preventDefault();
       if (e.originalEvent) e.originalEvent.stopPropagation();
-
       if (currentPopup) { currentPopup.remove(); }
 
-      const props = e.features[0].properties;
-      const tripId = props.trip_id;
-      const speed = parseFloat(props.Speed || props.speed || 0);
+      const props       = e.features[0].properties;
+      const tripId      = props.trip_id;
+      const speed       = parseFloat(props.Speed || props.speed || 0);
       const roadQuality = parseInt(props.road_quality || 0);
 
       selectedTrip = tripId;
       applyTripFilter(tripId);
       showSelection(tripId);
 
-      const stats = getTripStats(tripId);
-      const distanceKm = stats ? stats.distance.toFixed(2) : '—';
-      const avgSpeed   = stats ? stats.avgSpeed.toFixed(1)  : '—';
-      const maxSpeed   = stats ? stats.maxSpeed.toFixed(1)  : '—';
-      const duration   = stats ? stats.duration             : '—';
+      // Popup stats: prefer metadata, fall back to GeoJSON aggregation
+      const stats      = getTripStats(tripId);
+      const allFeats   = map.getSource('trips')?._data?.features || [];
+      const tripFeats  = allFeats.filter(f => f.properties.trip_id === tripId);
+      const geoDistKm  = (tripFeats.reduce((s, f) => s + (f.properties.gps_distance_m || 0), 0) / 1000).toFixed(2);
+      const geoTime    = tripFeats.reduce((s, f) => s + (f.properties.time_diff_s || 0), 0);
+      const geoSpeeds  = tripFeats.map(f => f.properties.Speed || 0).filter(s => s > 0);
+      const geoAvgSpd  = geoSpeeds.length ? (geoSpeeds.reduce((a, b) => a + b, 0) / geoSpeeds.length).toFixed(1) : '—';
+      const geoMaxSpd  = geoSpeeds.length ? Math.max(...geoSpeeds).toFixed(1) : '—';
+
+      const distanceKm = stats ? stats.distance.toFixed(2) : geoDistKm;
+      const avgSpeed   = stats ? stats.avgSpeed.toFixed(1)  : geoAvgSpd;
+      const maxSpeed   = stats ? stats.maxSpeed.toFixed(1)  : geoMaxSpd;
+      const duration   = stats ? stats.duration             : formatDuration(Math.round(geoTime));
 
       const qualityLabels = { 0:'Unknown', 1:'Perfect', 2:'Normal', 3:'Outdated', 4:'Bad', 5:'No road' };
       const popupName = tripId.replace(/_/g, ' ').trim();
@@ -510,7 +546,6 @@ map.on('load', async () => {
     map.on('mouseenter', 'trips-layer', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'trips-layer', () => { map.getCanvas().style.cursor = ''; });
 
-    // Click anywhere else to deselect
     map.on('click', e => {
       if (!e.defaultPrevented) {
         if (searchActive) clearSearch();
@@ -554,9 +589,9 @@ function updateStatsVisibility() {
 window.addEventListener('resize', updateStatsVisibility);
 
 function updateLegendPositions() {
-  const order = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','sensorLegend'];
+  const order   = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','sensorLegend'];
   const visible = order.map(id => document.getElementById(id)).filter(el => el && el.style.display === 'block');
-  const mobile = window.matchMedia('(max-width: 768px)').matches;
+  const mobile  = window.matchMedia('(max-width: 768px)').matches;
   updateStatsVisibility();
 
   if (mobile) {
@@ -573,30 +608,34 @@ function setupAveragedSegmentControls() {
   if (cb) {
     cb.addEventListener('change', e => {
       showAveragedSegments = e.target.checked;
-      const modeGroup = document.getElementById('averagedModeGroup');
-      const legend = document.getElementById('averagedSegmentsLegend');
+      const modeGroup    = document.getElementById('averagedModeGroup');
+      const legend       = document.getElementById('averagedSegmentsLegend');
       const sensorLegend = document.getElementById('sensorLegend');
 
       if (showAveragedSegments) {
         if (map.getLayer('averaged-segments')) map.setLayoutProperty('averaged-segments', 'visibility', 'visible');
-        if (modeGroup) modeGroup.style.display = 'flex';
-        if (legend) legend.style.display = 'block';
+        if (modeGroup)    modeGroup.style.display    = 'flex';
+        if (legend)       legend.style.display       = 'block';
         if (sensorLegend) sensorLegend.style.display = 'none';
         if (map.getLayer('trips-layer')) map.setLayoutProperty('trips-layer', 'visibility', 'none');
         updateAveragedSegmentColors();
       } else {
         if (map.getLayer('averaged-segments')) map.setLayoutProperty('averaged-segments', 'visibility', 'none');
-        if (modeGroup) modeGroup.style.display = 'none';
-        if (legend) legend.style.display = 'none';
+        if (modeGroup)    modeGroup.style.display    = 'none';
+        if (legend)       legend.style.display       = 'none';
         if (sensorLegend) sensorLegend.style.display = 'block';
         if (map.getLayer('trips-layer')) map.setLayoutProperty('trips-layer', 'visibility', 'visible');
       }
+      updateResetButtonVisibility();
       setTimeout(updateLegendPositions, 50);
       updateStatsVisibility();
     });
   }
   document.querySelectorAll('input[name="averagedMode"]').forEach(r => {
-    r.addEventListener('change', e => { averagedSegmentMode = e.target.value; if (showAveragedSegments) updateAveragedSegmentColors(); });
+    r.addEventListener('change', e => {
+      averagedSegmentMode = e.target.value;
+      if (showAveragedSegments) updateAveragedSegmentColors();
+    });
   });
 }
 
@@ -605,7 +644,7 @@ function setupControls() {
   if (resetBtn) resetBtn.addEventListener('click', resetSelection);
 
   // Search
-  const searchInput = document.getElementById('tripSearchInput');
+  const searchInput  = document.getElementById('tripSearchInput');
   const searchButton = document.getElementById('tripSearchButton');
   const suggestionBox = document.getElementById('searchSuggestions');
 
@@ -617,7 +656,7 @@ function setupControls() {
       suggestionBox.innerHTML = '';
       if (!q) { hideSuggestions(); return; }
       const sensors = getSensorNames().filter(s => s.toLowerCase().startsWith(q));
-      const trips = tripIds.filter(id => id.toLowerCase().startsWith(q) && !sensors.some(s => id.startsWith(s)));
+      const trips   = tripIds.filter(id => id.toLowerCase().startsWith(q) && !sensors.some(s => id.startsWith(s)));
       if (!sensors.length && !trips.length) { hideSuggestions(); return; }
       sensors.forEach(sensor => {
         const count = tripIds.filter(id => id.startsWith(sensor)).length;
@@ -641,9 +680,9 @@ function setupControls() {
     const clearBtn = document.getElementById('tripClearButton');
     if (clearBtn) clearBtn.addEventListener('click', () => { hideSuggestions(); clearSearch(); });
     searchInput.addEventListener('keypress', e => { if (e.key === 'Enter') { hideSuggestions(); searchAndHighlightTrip(searchInput.value); } });
-    searchInput.addEventListener('input', e => showSuggestions(e.target.value));
-    searchInput.addEventListener('focus', e => { if (e.target.value) showSuggestions(e.target.value); });
-    searchInput.addEventListener('blur', () => setTimeout(hideSuggestions, 150));
+    searchInput.addEventListener('input',  e => showSuggestions(e.target.value));
+    searchInput.addEventListener('focus',  e => { if (e.target.value) showSuggestions(e.target.value); });
+    searchInput.addEventListener('blur',   () => setTimeout(hideSuggestions, 150));
   }
 
   // Speed colours
@@ -653,20 +692,21 @@ function setupControls() {
       showSpeedColors = e.target.checked;
       if (showSpeedColors && showRoadQuality) {
         showRoadQuality = false;
-        document.getElementById('roadQualityCheckbox').checked = false;
+        document.getElementById('roadQualityCheckbox').checked  = false;
         document.getElementById('roadQualityLegend').style.display = 'none';
       }
-      const legend = document.getElementById('speedLegend');
+      const legend    = document.getElementById('speedLegend');
       const modeGroup = document.getElementById('speedModeGroup');
       if (showSpeedColors) {
         map.setPaintProperty('trips-layer', 'line-color', getSpeedColorExpression(speedMode));
-        if (legend) legend.style.display = 'block';
+        if (legend)    legend.style.display    = 'block';
         if (modeGroup) modeGroup.style.display = 'flex';
       } else {
         map.setPaintProperty('trips-layer', 'line-color', getSensorColorExpression());
-        if (legend) legend.style.display = 'none';
+        if (legend)    legend.style.display    = 'none';
         if (modeGroup) modeGroup.style.display = 'none';
       }
+      updateResetButtonVisibility();
       setTimeout(updateLegendPositions, 50);
       updateStatsVisibility();
     });
@@ -679,9 +719,9 @@ function setupControls() {
       showRoadQuality = e.target.checked;
       if (showRoadQuality && showSpeedColors) {
         showSpeedColors = false;
-        document.getElementById('speedColorsCheckbox').checked = false;
-        document.getElementById('speedLegend').style.display = 'none';
-        document.getElementById('speedModeGroup').style.display = 'none';
+        document.getElementById('speedColorsCheckbox').checked   = false;
+        document.getElementById('speedLegend').style.display     = 'none';
+        document.getElementById('speedModeGroup').style.display  = 'none';
       }
       const legend = document.getElementById('roadQualityLegend');
       if (showRoadQuality) {
@@ -691,6 +731,7 @@ function setupControls() {
         map.setPaintProperty('trips-layer', 'line-color', getSensorColorExpression());
         if (legend) legend.style.display = 'none';
       }
+      updateResetButtonVisibility();
       updateLegendPositions();
       updateStatsVisibility();
     });
@@ -710,15 +751,37 @@ function setupControls() {
 }
 
 function updateStatsFromMetadata() {
-  document.getElementById('statTrips').textContent = tripIds.length;
-  if (!tripsMetadata) return;
-  const agg = calculateAggregateStats();
-  if (agg) {
-    document.getElementById('statTrips').textContent = tripIds.length;
-    document.getElementById('statDistance').textContent = `${agg.totalDistance} km`;
-    document.getElementById('statAvgSpeed').textContent = `${agg.avgSpeed} km/h`;
-    document.getElementById('statTotalTime').textContent = agg.totalTime;
+  const source      = map.getSource('trips');
+  const allFeatures = source?._data?.features || [];
+
+  const tripStats = {};
+  for (const f of allFeatures) {
+    const tid   = f.properties.trip_id;
+    const dist  = f.properties.gps_distance_m || 0;
+    const time  = f.properties.time_diff_s    || 0;
+    const speed = f.properties.Speed          || 0;
+
+    if (!tripStats[tid]) tripStats[tid] = { dist: 0, time: 0, speeds: [] };
+    tripStats[tid].dist += dist;
+    tripStats[tid].time += time;
+    if (speed > 0) tripStats[tid].speeds.push(speed);
   }
+
+  let totalDist = 0, totalTime = 0, allSpeeds = [];
+  for (const t of Object.values(tripStats)) {
+    totalDist += t.dist;
+    totalTime += t.time;
+    allSpeeds.push(...t.speeds);
+  }
+
+  const avgSpeed = allSpeeds.length
+    ? (allSpeeds.reduce((a, b) => a + b, 0) / allSpeeds.length).toFixed(1)
+    : '—';
+
+  document.getElementById('statTrips').textContent     = tripIds.length;
+  document.getElementById('statDistance').textContent  = `${(totalDist / 1000).toFixed(1)} km`;
+  document.getElementById('statAvgSpeed').textContent  = `${avgSpeed} km/h`;
+  document.getElementById('statTotalTime').textContent = formatDuration(Math.round(totalTime));
 }
 
 function renderSensorLegend() {
@@ -730,11 +793,10 @@ function renderSensorLegend() {
       <span>${s}</span>
     </div>`).join('');
 
-  // Add click handlers
   legend.querySelectorAll('.sensor-legend-item').forEach(item => {
     item.addEventListener('click', () => {
       const sensor = item.dataset.sensor;
-      const input = document.getElementById('tripSearchInput');
+      const input  = document.getElementById('tripSearchInput');
       if (input) input.value = sensor;
       searchAndHighlightTrip(sensor);
     });
