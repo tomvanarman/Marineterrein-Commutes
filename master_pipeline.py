@@ -6,8 +6,9 @@ Runs the complete data processing workflow:
 2. CSV to GeoJSON conversion
 3. Speed calculation from sensor data
 4. Road segment averaging and consolidation
-5. PMTiles generation for web visualization
-6. Cleanup of processed CSV files
+5. Generate trips.geojson (merge local + Supabase)
+6. Generate braking hotspots
+7. Cleanup of processed CSV files
 
 Usage:
   python master_pipeline.py          # local CSVs only
@@ -109,7 +110,6 @@ def check_prerequisites(use_api):
     print_step("0", "Checking Prerequisites")
     issues = []
 
-    # csv_data only required when not fetching from API
     csv_dir = Path("csv_data")
     if not use_api:
         if not csv_dir.exists():
@@ -123,7 +123,6 @@ def check_prerequisites(use_api):
             else:
                 print_success(f"Found {len(csv_files)} CSV file(s) in csv_data/")
     else:
-        # csv_data will be populated by the API fetch; just make sure it exists
         csv_dir.mkdir(exist_ok=True)
         print_info("csv_data/ will be populated by the Supabase fetch step.")
 
@@ -131,7 +130,8 @@ def check_prerequisites(use_api):
         "csv_to_geojson_converter.py",
         "integrated_processor.py",
         "road_averaging.py",
-        "build_pmtiles.py",
+        "generate_trips_geojson.py",
+        "generate_braking_hotspots.py",
     ]
     for script in scripts:
         if not Path(script).exists():
@@ -139,19 +139,6 @@ def check_prerequisites(use_api):
             print_error(f"{script} not found")
         else:
             print_success(f"Found {script}")
-
-    # tippecanoe
-    try:
-        result = subprocess.run(["tippecanoe", "--version"],
-                                capture_output=True, text=True, check=False)
-        if result.returncode == 0:
-            print_success("tippecanoe is installed")
-        else:
-            raise FileNotFoundError
-    except FileNotFoundError:
-        issues.append("tippecanoe not found")
-        print_error("tippecanoe not found")
-        print_info("Install with: brew install tippecanoe (macOS)")
 
     return len(issues) == 0, issues
 
@@ -161,7 +148,7 @@ def check_prerequisites(use_api):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def cleanup_csv_files():
-    print_step("6", "Cleaning Up Processed CSV Files")
+    print_step("7", "Cleaning Up Processed CSV Files")
 
     csv_dir = Path("csv_data")
     if not csv_dir.exists():
@@ -212,11 +199,12 @@ def cleanup_csv_files():
 def print_summary(use_api):
     print_header("PIPELINE SUMMARY")
 
-    csv_count              = count_files("csv_data", "*.csv")
-    geojson_clean_count    = count_files("sensor_data", "*_clean.geojson")
+    csv_count               = count_files("csv_data", "*.csv")
+    geojson_clean_count     = count_files("sensor_data", "*_clean.geojson")
     geojson_processed_count = count_files("processed_sensor_data", "*_processed.geojson")
-    road_segments_exists   = Path("road_segments_averaged.json").exists()
-    pmtiles_exists         = Path("trips.pmtiles").exists()
+    road_segments_exists    = Path("road_segments_averaged.json").exists()
+    trips_geojson_exists    = Path("trips.geojson").exists()
+    braking_hotspots_exists = Path("braking_hotspots.json").exists()
 
     # Metadata source breakdown
     meta_file = Path("trips_metadata.json")
@@ -240,32 +228,34 @@ def print_summary(use_api):
     print(f"  📄 Loaded from local CSV    : {local_count}")
 
     print(f"\n{Colors.BOLD}Generated Files:{Colors.END}")
-    print(f"  🗺️  Cleaned GeoJSON   : {geojson_clean_count}")
-    print(f"  ⚡ Processed GeoJSON  : {geojson_processed_count}")
-    print(f"  🛣️  Road Segments     : {'✅ Yes' if road_segments_exists else '❌ No'}")
-    print(f"  📦 PMTiles           : {'✅ Yes' if pmtiles_exists else '❌ No'}")
+    print(f"  🗺️  Cleaned GeoJSON     : {geojson_clean_count}")
+    print(f"  ⚡ Processed GeoJSON    : {geojson_processed_count}")
+    print(f"  🛣️  Road Segments       : {'✅ Yes' if road_segments_exists else '❌ No'}")
+    print(f"  🗺️  trips.geojson       : {'✅ Yes' if trips_geojson_exists else '❌ No'}")
+    print(f"  🛑 braking_hotspots.json: {'✅ Yes' if braking_hotspots_exists else '❌ No'}")
 
     if road_segments_exists:
         try:
             data = json.loads(Path("road_segments_averaged.json").read_text())
-            print(f"     Segments: {len(data.get('features', []))}")
+            print(f"     Road segments: {len(data.get('features', []))}")
         except Exception:
             pass
 
-    if pmtiles_exists:
-        size_mb = Path("trips.pmtiles").stat().st_size / (1024 * 1024)
-        print(f"     Size: {size_mb:.2f} MB")
+    if trips_geojson_exists:
+        size_mb = Path("trips.geojson").stat().st_size / (1024 * 1024)
+        print(f"     trips.geojson size: {size_mb:.2f} MB")
 
     print(f"\n{Colors.BOLD}Output Directories:{Colors.END}")
     print(f"  📁 sensor_data/")
     print(f"  📁 processed_sensor_data/")
 
-    if pmtiles_exists:
+    if trips_geojson_exists and braking_hotspots_exists:
         print(f"\n{Colors.GREEN}{Colors.BOLD}✅ Pipeline completed successfully!{Colors.END}")
         print(f"\n{Colors.CYAN}Next steps:{Colors.END}")
-        print(f"  1. Commit: git add . && git commit -m 'Update trip data'")
-        print(f"  2. Push  : git push")
-        print(f"  3. View  : https://tomvanarman.github.io/Reflector-Ride-Maps/")
+        print(f"  1. Commit: git add trips.geojson trips_metadata.json road_segments_averaged.json braking_hotspots.json")
+        print(f"  2. Commit: git commit -m 'Update trip data'")
+        print(f"  3. Push  : git push")
+        print(f"  4. View  : https://tomvanarman.github.io/Reflector-Ride-Maps/")
     else:
         print(f"\n{Colors.YELLOW}{Colors.BOLD}⚠️  Pipeline completed with issues{Colors.END}")
 
@@ -320,11 +310,11 @@ def main():
         print_error("Step 1 failed. Aborting.")
         sys.exit(1)
 
-    # ── Step 2: Speed calculation ─────────────────────────────────────────────
-    print_step("2", "Calculating Speeds from Sensor Data")
+    # ── Step 2: Speed + road quality + braking calculation ────────────────────
+    print_step("2", "Calculating Speeds, Road Quality, and Braking Events")
     step2_ok = run_command(
         [sys.executable, "integrated_processor.py"],
-        "Speed calculation"
+        "Speed, road quality, and braking calculation"
     )
     if not step2_ok:
         print_error("Step 2 failed. Aborting.")
@@ -339,18 +329,28 @@ def main():
     if not step3_ok:
         print_warning("Step 3 failed — continuing anyway…")
 
-    # ── Step 4: PMTiles ───────────────────────────────────────────────────────
-    print_step("4", "Building PMTiles for Web")
+    # ── Step 4: Generate trips.geojson ────────────────────────────────────────
+    print_step("4", "Generating trips.geojson")
     step4_ok = run_command(
-        [sys.executable, "build_pmtiles.py"],
-        "PMTiles generation"
+        [sys.executable, "generate_trips_geojson.py"],
+        "trips.geojson generation"
     )
     if not step4_ok:
         print_error("Step 4 failed. Aborting.")
         sys.exit(1)
 
-    # ── Step 5: Cleanup ───────────────────────────────────────────────────────
-    if step1_ok and step2_ok and step4_ok:
+    # ── Step 5: Generate braking hotspots ─────────────────────────────────────
+    print_step("5", "Generating Braking Hotspots")
+    step5_ok = run_command(
+        [sys.executable, "generate_braking_hotspots.py"],
+        "Braking hotspots generation"
+    )
+    if not step5_ok:
+        print_error("Step 5 failed. Aborting.")
+        sys.exit(1)
+
+    # ── Step 6: Cleanup ───────────────────────────────────────────────────────
+    if step1_ok and step2_ok and step4_ok and step5_ok:
         cleanup_csv_files()
     else:
         print_warning("Skipping CSV cleanup due to earlier errors.")

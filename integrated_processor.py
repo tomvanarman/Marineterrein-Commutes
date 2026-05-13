@@ -16,6 +16,8 @@ OUTPUT_ROOT = "processed_sensor_data"
 # Braking detection: flag a segment when deceleration exceeds this threshold.
 # Units: km/h lost per second. 5 = firm intentional braking; lower = more sensitive.
 BRAKING_DECEL_THRESHOLD_KMH_S = 5.0
+BRAKING_MIN_SPEED_KMH = 8.0        # ignore braking below this speed
+BRAKING_MIN_DURATION_S = 0.3       # deceleration must persist this long
 
 # Trips to skip
 SKIP_TRIPS = {
@@ -215,7 +217,9 @@ def calculate_braking_intensity(prev_speed_kmh, curr_speed_kmh, time_diff_s):
     """
     if time_diff_s is None or time_diff_s <= 0:
         return 0.0
-    delta = prev_speed_kmh - curr_speed_kmh   # positive = deceleration
+    if prev_speed_kmh < BRAKING_MIN_SPEED_KMH:   # ← add this
+        return 0.0
+    delta = prev_speed_kmh - curr_speed_kmh
     if delta <= 0:
         return 0.0
     return round(delta / time_diff_s, 2)
@@ -433,7 +437,7 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                         'original_speed': start_point['original_speed'],
                         'wheel_diameter_mm': wheel_diameter_mm,
                         'braking_intensity': braking_intensity,
-                        'is_braking': braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S,
+                        'is_braking': (braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S and time_diff_seconds >= BRAKING_MIN_DURATION_S),
                     }
                 })
 
@@ -523,7 +527,7 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                             'original_speed': start_point['original_speed'],
                             'wheel_diameter_mm': wheel_diameter_mm,
                             'braking_intensity': braking_intensity,
-                            'is_braking': braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S,
+                            'is_braking': (braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S and time_diff_seconds >= BRAKING_MIN_DURATION_S),
                         }
                     })
 
