@@ -315,6 +315,8 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
                 "time_diff_s":       round(time_diff_s, 3),
                 "gps_distance_m":    round(dist, 1),
                 "wheel_diameter_mm": wheel_diam_mm,
+                "braking_intensity": 0,   
+                "is_braking":        False, 
             },
         })
 

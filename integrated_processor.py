@@ -13,6 +13,10 @@ SECONDS_PER_SAMPLE = 1 / SAMPLE_RATE_HZ  # 0.02 seconds
 INPUT_ROOT = "sensor_data"
 OUTPUT_ROOT = "processed_sensor_data"
 
+# Braking detection: flag a segment when deceleration exceeds this threshold.
+# Units: km/h lost per second. 5 = firm intentional braking; lower = more sensitive.
+BRAKING_DECEL_THRESHOLD_KMH_S = 5.0
+
 # Trips to skip
 SKIP_TRIPS = {
     "602CD": ["Trip1"],
@@ -197,6 +201,26 @@ def map_road_quality_to_segments(points, road_quality_data):
     
     return get_quality_at_sample
 
+
+def calculate_braking_intensity(prev_speed_kmh, curr_speed_kmh, time_diff_s):
+    """
+    Return the deceleration rate (km/h per second) for a segment.
+
+    prev_speed_kmh : speed at the START of the segment (km/h)
+    curr_speed_kmh : speed at the END of the segment (km/h)
+    time_diff_s    : elapsed time for the segment (seconds); must be > 0
+
+    Returns 0.0 when the bike is accelerating or holding speed.
+    Returns a positive value (km/h / s) when decelerating.
+    """
+    if time_diff_s is None or time_diff_s <= 0:
+        return 0.0
+    delta = prev_speed_kmh - curr_speed_kmh   # positive = deceleration
+    if delta <= 0:
+        return 0.0
+    return round(delta / time_diff_s, 2)
+
+
 def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
     """Process a single GeoJSON file: clean, calculate speeds, add road quality.
     
@@ -349,6 +373,9 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         
         if use_gps_speed:
             # ── API path: one segment per consecutive point pair, GPS speed ──────
+            # Keep a rolling previous speed so we can compute deceleration.
+            prev_speed_kmh = None
+
             for i in range(len(points) - 1):
                 start_point = points[i]
                 end_point   = points[i + 1]
@@ -360,6 +387,7 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
 
                 # Skip GPS jumps
                 if gps_distance > 1000:
+                    prev_speed_kmh = None
                     continue
 
                 # Average GPS speed of the two endpoints, capped at 40 km/h
@@ -367,10 +395,22 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 speed_kmh = min(speed_kmh, 40)
 
                 if start_point['lon'] == end_point['lon'] and start_point['lat'] == end_point['lat']:
+                    prev_speed_kmh = speed_kmh
                     continue
 
                 midpoint_sample = (start_point['samples'] + end_point['samples']) // 2
                 road_quality = quality_lookup(midpoint_sample) if quality_lookup else 0
+
+                # Estimate time from sample count (API trips lack time_diff_s)
+                sample_diff = end_point['samples'] - start_point['samples']
+                est_time_s  = sample_diff * SECONDS_PER_SAMPLE if sample_diff > 0 else None
+
+                # Braking: compare this segment's speed against the previous one
+                braking_intensity = 0.0
+                if prev_speed_kmh is not None:
+                    braking_intensity = calculate_braking_intensity(
+                        prev_speed_kmh, speed_kmh, est_time_s
+                    )
 
                 new_features.append({
                     'type': 'Feature',
@@ -387,16 +427,22 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                         'marker': start_point['marker'],
                         'trip_id': trip_id,
                         'hrot_diff': 0,
-                        'sample_diff': end_point['samples'] - start_point['samples'],
-                        'time_diff_s': None,
+                        'sample_diff': sample_diff,
+                        'time_diff_s': round(est_time_s, 3) if est_time_s else None,
                         'gps_distance_m': round(gps_distance, 1),
                         'original_speed': start_point['original_speed'],
-                        'wheel_diameter_mm': wheel_diameter_mm
+                        'wheel_diameter_mm': wheel_diameter_mm,
+                        'braking_intensity': braking_intensity,
+                        'is_braking': braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S,
                     }
                 })
 
+                prev_speed_kmh = speed_kmh
+
         else:
             # ── Local CSV path: wheel-rotation-based speed (original logic) ──────
+            prev_speed_kmh = None   # rolling speed for braking detection
+
             i = 0
             while i < len(points) - 1:
                 start_point = points[i]
@@ -436,6 +482,7 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 )
                 
                 if gps_distance > 1000:
+                    prev_speed_kmh = None
                     i = j
                     continue
                 
@@ -444,6 +491,13 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 
                 midpoint_sample = (start_point['samples'] + end_point['samples']) // 2
                 road_quality = quality_lookup(midpoint_sample) if quality_lookup else 0
+
+                # Braking: compare against previous segment's speed
+                braking_intensity = 0.0
+                if prev_speed_kmh is not None:
+                    braking_intensity = calculate_braking_intensity(
+                        prev_speed_kmh, speed_kmh, time_diff_seconds
+                    )
                 
                 if (start_point['lon'] != end_point['lon'] or 
                     start_point['lat'] != end_point['lat']) and speed_kmh < 100:
@@ -467,9 +521,17 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                             'time_diff_s': round(time_diff_seconds, 3),
                             'gps_distance_m': round(gps_distance, 1),
                             'original_speed': start_point['original_speed'],
-                            'wheel_diameter_mm': wheel_diameter_mm
+                            'wheel_diameter_mm': wheel_diameter_mm,
+                            'braking_intensity': braking_intensity,
+                            'is_braking': braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S,
                         }
                     })
+
+                    prev_speed_kmh = speed_kmh
+                else:
+                    # Segment skipped but still update rolling speed to avoid
+                    # false braking signals across a gap.
+                    prev_speed_kmh = speed_kmh
                 
                 i = j
         
@@ -480,6 +542,10 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
             qualities = [f['properties']['road_quality'] for f in new_features]
             quality_counts = np.bincount(qualities, minlength=6)[1:]
             print(f"    📊 Road quality distribution: {dict(enumerate(quality_counts, 1))}")
+
+        braking_count = sum(1 for f in new_features if f['properties'].get('is_braking'))
+        if braking_count:
+            print(f"    🛑 Braking events detected: {braking_count}")
         
         return {'type': 'FeatureCollection', 'features': new_features}, file_metadata
     

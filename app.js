@@ -30,6 +30,8 @@ let showAveragedSegments = false;
 let averagedSegmentMode = 'composite';
 let searchActive = false;
 let activeFilter = null;
+let showBraking = false;
+let showBrakingHotspots = false;  // NEW: accumulation hotspot toggle
 
 // ─── Sensor colours ───────────────────────────────────────────────────────────
 const SENSOR_COLORS = [
@@ -80,6 +82,28 @@ function getAveragedQualityColorExpression() {
 }
 function getCompositeScoreColorExpression() {
   return ['interpolate', ['linear'], ['get', 'composite_score'], 0,'#22C55E', 25,'#84CC16', 50,'#FACC15', 75,'#F97316', 100,'#DC2626'];
+}
+
+// ─── Braking per-segment colour ───────────────────────────────────────────────
+function getBrakingColorExpression() {
+  return [
+    'interpolate', ['linear'],
+    ['to-number', ['coalesce', ['get', 'braking_intensity'], 0]],
+    5,  '#FFF176',
+    10, '#FF9800',
+    20, '#D32F2F',
+  ];
+}
+
+// ─── Braking hotspot colour (count-driven) ────────────────────────────────────
+function getHotspotColorExpression() {
+  return [
+    'interpolate', ['linear'],
+    ['to-number', ['get', 'count']],
+    1, '#FFF176',
+    3, '#FF9800',
+    8, '#D32F2F',
+  ];
 }
 
 function getQualityLabel(q) {
@@ -148,6 +172,20 @@ async function loadAveragedSegments() {
   return null;
 }
 
+// NEW: load pre-aggregated braking hotspots
+async function loadBrakingHotspots() {
+  try {
+    const r = await fetch('./braking_hotspots.json');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    console.log(`✅ Loaded ${data.features.length} braking hotspots`);
+    return data;
+  } catch (err) {
+    console.warn('⚠️ Could not load braking_hotspots.json — hotspot layer disabled:', err.message);
+    return null;
+  }
+}
+
 // ─── Stats helpers ────────────────────────────────────────────────────────────
 function getTripStats(tripId) {
   if (!tripsMetadata) return null;
@@ -197,7 +235,7 @@ function formatDuration(s) {
 
 // ─── Reset button visibility ──────────────────────────────────────────────────
 function updateResetButtonVisibility() {
-  const active = showSpeedColors || showRoadQuality || showAveragedSegments || searchActive || !!selectedTrip;
+  const active = showSpeedColors || showRoadQuality || showAveragedSegments || showBraking || searchActive || !!selectedTrip;
   document.getElementById('resetButton').style.display = active ? 'block' : 'none';
 }
 
@@ -208,25 +246,18 @@ function currentColorExpression() {
   return getSensorColorExpression();
 }
 
-// ─── Returns the set of trip IDs currently highlighted (selected trip,
-//     selected sensor group, or null for "all"). Used to scope layer colours.
 function getSelectedTripIds() {
   if (!activeFilter) return null;
-  // activeFilter is set to a single tripId in applyTripFilter,
-  // or to an array of ids in applyGroupFilter.
   return Array.isArray(activeFilter) ? activeFilter : [activeFilter];
 }
 
-// ─── Builds a colour expression that shows the given colour only for
-//     selectedIds, and hides everything else as fully transparent.
-//     When selectedIds is null all features are shown.
 function buildFilteredColorExpression(baseExpr, selectedIds) {
   if (!selectedIds || selectedIds.length === 0) return baseExpr;
   return [
     'case',
     ['in', ['get', 'trip_id'], ['literal', selectedIds]],
     baseExpr,
-    'rgba(0,0,0,0)'          // hide non-selected features completely
+    'rgba(0,0,0,0)'
   ];
 }
 
@@ -235,8 +266,6 @@ function applyTripFilter(filterTripId) {
   if (!map.getLayer('trips-layer')) return;
 
   if (filterTripId) {
-    // Determine base colour for the highlighted trips:
-    // respect whichever data layer is active, or fall back to pink highlight.
     let highlightColor;
     if (showSpeedColors) {
       highlightColor = getSpeedColorExpression(speedMode);
@@ -250,21 +279,33 @@ function applyTripFilter(filterTripId) {
       'case',
       ['==', ['get', 'trip_id'], filterTripId],
       highlightColor,
-      'rgba(0,0,0,0)'        // completely hide other trips
+      'rgba(0,0,0,0)'
     ]);
     map.setPaintProperty('trips-layer', 'line-opacity', 1);
     map.setPaintProperty('trips-layer', 'line-width', [
       'case', ['==', ['get', 'trip_id'], filterTripId], 4, 0
     ]);
+
+    if (map.getLayer('braking-layer')) {
+      map.setFilter('braking-layer', [
+        'all',
+        ['==', ['get', 'is_braking'], true],
+        ['==', ['get', 'trip_id'], filterTripId],
+      ]);
+    }
   } else {
     map.setPaintProperty('trips-layer', 'line-color', currentColorExpression());
     map.setPaintProperty('trips-layer', 'line-opacity', 0.7);
     map.setPaintProperty('trips-layer', 'line-width', 3);
+
+    if (map.getLayer('braking-layer')) {
+      map.setFilter('braking-layer', ['==', ['get', 'is_braking'], true]);
+    }
   }
 }
 
 function applyGroupFilter(matchingIds) {
-  activeFilter = matchingIds;          // store array so speed/quality can scope to it
+  activeFilter = matchingIds;
   if (!map.getLayer('trips-layer')) return;
   const set = new Set(matchingIds);
 
@@ -281,33 +322,47 @@ function applyGroupFilter(matchingIds) {
     'case',
     ['in', ['get', 'trip_id'], ['literal', [...set]]],
     highlightColor,
-    'rgba(0,0,0,0)'          // completely hide non-matching trips
+    'rgba(0,0,0,0)'
   ]);
   map.setPaintProperty('trips-layer', 'line-opacity', 1);
   map.setPaintProperty('trips-layer', 'line-width', [
     'case', ['in', ['get', 'trip_id'], ['literal', [...set]]], 4, 0
   ]);
+
+  if (map.getLayer('braking-layer')) {
+    map.setFilter('braking-layer', [
+      'all',
+      ['==', ['get', 'is_braking'], true],
+      ['in', ['get', 'trip_id'], ['literal', [...set]]],
+    ]);
+  }
 }
 
 // ─── Selection / search ───────────────────────────────────────────────────────
 function resetSelection() {
-  selectedTrip      = null;
-  activeFilter      = null;
-  searchActive      = false;
-  showSpeedColors   = false;
-  showRoadQuality   = false;
+  selectedTrip         = null;
+  activeFilter         = null;
+  searchActive         = false;
+  showSpeedColors      = false;
+  showRoadQuality      = false;
   showAveragedSegments = false;
+  showBraking          = false;
+  showBrakingHotspots  = false;  // NEW
 
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
 
   // Uncheck all filter checkboxes
-  const speedCb   = document.getElementById('speedColorsCheckbox');
-  const qualityCb = document.getElementById('roadQualityCheckbox');
-  const avgCb     = document.getElementById('averagedSegmentsCheckbox');
-  if (speedCb)   speedCb.checked   = false;
-  if (qualityCb) qualityCb.checked = false;
-  if (avgCb)     avgCb.checked     = false;
+  const speedCb        = document.getElementById('speedColorsCheckbox');
+  const qualityCb      = document.getElementById('roadQualityCheckbox');
+  const avgCb          = document.getElementById('averagedSegmentsCheckbox');
+  const brakingCb      = document.getElementById('brakingCheckbox');
+  const hotspotCb      = document.getElementById('brakingHotspotsCheckbox');  // NEW
+  if (speedCb)        speedCb.checked        = false;
+  if (qualityCb)      qualityCb.checked      = false;
+  if (avgCb)          avgCb.checked          = false;
+  if (brakingCb)      brakingCb.checked      = false;
+  if (hotspotCb)      hotspotCb.checked      = false;  // NEW
 
   // Hide all legends and mode groups
   document.getElementById('speedLegend').style.display            = 'none';
@@ -315,10 +370,24 @@ function resetSelection() {
   document.getElementById('roadQualityLegend').style.display      = 'none';
   document.getElementById('averagedSegmentsLegend').style.display = 'none';
   document.getElementById('averagedModeGroup').style.display      = 'none';
+  const brakingLegend    = document.getElementById('brakingLegend');
+  const hotspotSubGroup  = document.getElementById('brakingHotspotsGroup');  // NEW
+  if (brakingLegend)   brakingLegend.style.display   = 'none';
+  if (hotspotSubGroup) hotspotSubGroup.style.display  = 'none';  // NEW
 
   // Restore layers
   if (map.getLayer('averaged-segments'))
     map.setLayoutProperty('averaged-segments', 'visibility', 'none');
+  if (map.getLayer('braking-layer'))
+    map.setLayoutProperty('braking-layer', 'visibility', 'none');
+  if (map.getLayer('braking-halo'))
+    map.setLayoutProperty('braking-halo', 'visibility', 'none');
+
+  // NEW: hide hotspot layers
+  ['braking-hotspots-halo', 'braking-hotspots-dot', 'braking-hotspots-label'].forEach(id => {
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+  });
+
   if (map.getLayer('trips-layer')) {
     map.setLayoutProperty('trips-layer', 'visibility', 'visible');
     map.setPaintProperty('trips-layer', 'line-color', getSensorColorExpression());
@@ -448,11 +517,11 @@ async function setupAveragedSegments() {
     id: 'averaged-segments', type: 'circle', source: 'averaged-segments',
     layout: { visibility: 'none' },
     paint: {
-      'circle-color':             getCompositeScoreColorExpression(),
-      'circle-radius':            ['interpolate', ['linear'], ['zoom'], 10, 18, 13, 28, 16, 45],
-      'circle-blur':              1.2,
-      'circle-opacity':           0.6,
-      'circle-pitch-alignment':   'map',
+      'circle-color':           getCompositeScoreColorExpression(),
+      'circle-radius':          ['interpolate', ['linear'], ['zoom'], 10, 18, 13, 28, 16, 45],
+      'circle-blur':            1.2,
+      'circle-opacity':         0.6,
+      'circle-pitch-alignment': 'map',
     }
   });
 
@@ -478,6 +547,185 @@ async function setupAveragedSegments() {
   map.on('mouseleave', 'averaged-segments', () => { map.getCanvas().style.cursor = ''; });
 
   console.log('✅ Averaged segments layer added');
+}
+
+// ─── Per-segment braking layer ────────────────────────────────────────────────
+function setupBrakingLayer(geojson) {
+  const brakingFeatures = (geojson.features || [])
+    .filter(f => f.properties.is_braking === true)
+    .map(f => {
+      const coords = f.geometry.coordinates;
+      const midIdx = Math.floor(coords.length / 2);
+      const [lng, lat] = coords[midIdx] || coords[0];
+      return {
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [lng, lat] },
+        properties: f.properties,
+      };
+    });
+
+  console.log(`🛑 ${brakingFeatures.length} braking events found`);
+
+  map.addSource('braking', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: brakingFeatures },
+  });
+
+  // Outer glow ring
+  map.addLayer({
+    id: 'braking-halo',
+    type: 'circle',
+    source: 'braking',
+    layout: { visibility: 'none' },
+    filter: ['==', ['get', 'is_braking'], true],
+    paint: {
+      'circle-color':           getBrakingColorExpression(),
+      'circle-radius':          ['interpolate', ['linear'], ['zoom'], 10, 10, 14, 18, 17, 28],
+      'circle-blur':            1.0,
+      'circle-opacity':         0.35,
+      'circle-pitch-alignment': 'map',
+    },
+  });
+
+  // Solid dot
+  map.addLayer({
+    id: 'braking-layer',
+    type: 'circle',
+    source: 'braking',
+    layout: { visibility: 'none' },
+    filter: ['==', ['get', 'is_braking'], true],
+    paint: {
+      'circle-color':           getBrakingColorExpression(),
+      'circle-radius':          ['interpolate', ['linear'], ['zoom'], 10, 4, 14, 7, 17, 11],
+      'circle-opacity':         0.9,
+      'circle-stroke-width':    1.5,
+      'circle-stroke-color':    'rgba(0,0,0,0.6)',
+      'circle-pitch-alignment': 'map',
+    },
+  });
+
+  map.on('click', 'braking-layer', (e) => {
+    e.preventDefault();
+    if (e.originalEvent) e.originalEvent.stopPropagation();
+    const p = e.features[0].properties;
+    const intensity = parseFloat(p.braking_intensity || 0).toFixed(1);
+    const speed     = parseFloat(p.Speed || 0).toFixed(1);
+    const timeDiff  = p.time_diff_s != null ? `${parseFloat(p.time_diff_s).toFixed(2)}s` : 'estimated';
+    const tripName  = (p.trip_id || '').replace(/_/g, ' ').trim();
+
+    let severity = 'Gentle';
+    if (p.braking_intensity >= 20) severity = 'Emergency';
+    else if (p.braking_intensity >= 10) severity = 'Hard';
+    else if (p.braking_intensity >= 5)  severity = 'Firm';
+
+    new mapboxgl.Popup()
+      .setLngLat(e.lngLat)
+      .setHTML(`
+        <strong>🛑 Sudden Braking</strong><br>
+        ⚡ Deceleration: ${intensity} km/h/s<br>
+        🏷️ Severity: ${severity}<br>
+        🚴 Speed at event: ${speed} km/h<br>
+        ⏱️ Segment duration: ${timeDiff}<br>
+        🗺️ Trip: ${tripName}
+      `)
+      .addTo(map);
+  });
+
+  map.on('mouseenter', 'braking-layer', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'braking-layer', () => { map.getCanvas().style.cursor = ''; });
+
+  console.log('✅ Per-segment braking layer added');
+}
+
+// ─── Braking hotspot accumulation layer ──────────────────────────────────────
+async function setupBrakingHotspots() {
+  const data = await loadBrakingHotspots();
+  if (!data) return;
+
+  map.addSource('braking-hotspots', { type: 'geojson', data });
+
+  // Outer glow — radius and colour scale with event count
+  map.addLayer({
+    id: 'braking-hotspots-halo',
+    type: 'circle',
+    source: 'braking-hotspots',
+    layout: { visibility: 'none' },
+    paint: {
+      'circle-color': getHotspotColorExpression(),
+      'circle-radius': [
+        'interpolate', ['linear'], ['zoom'],
+        10, ['interpolate', ['linear'], ['get', 'count'],  1, 14,  5, 22, 15, 36],
+        14, ['interpolate', ['linear'], ['get', 'count'],  1, 22,  5, 36, 15, 56],
+        17, ['interpolate', ['linear'], ['get', 'count'],  1, 34,  5, 54, 15, 80],
+      ],
+      'circle-blur':            1.2,
+      'circle-opacity':         0.35,
+      'circle-pitch-alignment': 'map',
+    },
+  });
+
+  // Solid dot — also scales with count
+  map.addLayer({
+    id: 'braking-hotspots-dot',
+    type: 'circle',
+    source: 'braking-hotspots',
+    layout: { visibility: 'none' },
+    paint: {
+      'circle-color': getHotspotColorExpression(),
+      'circle-radius': [
+        'interpolate', ['linear'], ['zoom'],
+        10, ['interpolate', ['linear'], ['get', 'count'],  1,  5,  5,  9, 15, 15],
+        14, ['interpolate', ['linear'], ['get', 'count'],  1,  8,  5, 14, 15, 22],
+        17, ['interpolate', ['linear'], ['get', 'count'],  1, 12,  5, 20, 15, 32],
+      ],
+      'circle-opacity':         0.9,
+      'circle-stroke-width':    1.5,
+      'circle-stroke-color':    'rgba(0,0,0,0.6)',
+      'circle-pitch-alignment': 'map',
+    },
+  });
+
+  // Count label — only visible when zoomed in
+  map.addLayer({
+    id: 'braking-hotspots-label',
+    type: 'symbol',
+    source: 'braking-hotspots',
+    layout: {
+      visibility:           'none',
+      'text-field':         ['to-string', ['get', 'count']],
+      'text-size':          12,
+      'text-font':          ['Open Sans Bold', 'Arial Unicode MS Bold'],
+      'text-allow-overlap': true,
+    },
+    paint: {
+      'text-color':       '#ffffff',
+      'text-halo-color':  'rgba(0,0,0,0.7)',
+      'text-halo-width':  1.5,
+    },
+    minzoom: 13,
+  });
+
+  map.on('click', 'braking-hotspots-dot', (e) => {
+    e.preventDefault();
+    if (e.originalEvent) e.originalEvent.stopPropagation();
+    const p = e.features[0].properties;
+    new mapboxgl.Popup()
+      .setLngLat(e.lngLat)
+      .setHTML(`
+        <strong>🔴 Braking Hotspot</strong><br>
+        📍 Events here: <strong>${p.count}</strong><br>
+        ⚡ Avg deceleration: ${p.avg_intensity} km/h/s<br>
+        🏎️ Peak deceleration: ${p.max_intensity} km/h/s<br>
+        🏷️ Severity: ${p.severity}<br>
+        🚲 Across ${p.trip_count} trip(s)
+      `)
+      .addTo(map);
+  });
+
+  map.on('mouseenter', 'braking-hotspots-dot', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'braking-hotspots-dot', () => { map.getCanvas().style.cursor = ''; });
+
+  console.log('✅ Braking hotspots layer added');
 }
 
 // ─── Isochrone ────────────────────────────────────────────────────────────────
@@ -558,7 +806,6 @@ map.on('load', async () => {
       applyTripFilter(tripId);
       showSelection(tripId);
 
-      // Popup stats: prefer metadata, fall back to GeoJSON aggregation
       const stats      = getTripStats(tripId);
       const allFeats   = map.getSource('trips')?._data?.features || [];
       const tripFeats  = allFeats.filter(f => f.properties.trip_id === tripId);
@@ -567,6 +814,7 @@ map.on('load', async () => {
       const geoSpeeds  = tripFeats.map(f => f.properties.Speed || 0).filter(s => s > 0);
       const geoAvgSpd  = geoSpeeds.length ? (geoSpeeds.reduce((a, b) => a + b, 0) / geoSpeeds.length).toFixed(1) : '—';
       const geoMaxSpd  = geoSpeeds.length ? Math.max(...geoSpeeds).toFixed(1) : '—';
+      const geoBraking = tripFeats.filter(f => f.properties.is_braking).length;
 
       const distanceKm = stats ? stats.distance.toFixed(2) : geoDistKm;
       const avgSpeed   = stats ? stats.avgSpeed.toFixed(1)  : geoAvgSpd;
@@ -575,6 +823,7 @@ map.on('load', async () => {
 
       const qualityLabels = { 0:'Unknown', 1:'Perfect', 2:'Normal', 3:'Outdated', 4:'Bad', 5:'No road' };
       const popupName = tripId.replace(/_/g, ' ').trim();
+      const brakingLine = geoBraking > 0 ? `<br>🛑 Braking events: ${geoBraking}` : '';
 
       currentPopup = new mapboxgl.Popup()
         .setLngLat(e.lngLat)
@@ -585,7 +834,7 @@ map.on('load', async () => {
           📊 Average speed: ${avgSpeed} km/h<br>
           🏁 Max speed: ${maxSpeed} km/h<br>
           📍 Total distance: ${distanceKm} km<br>
-          ⏱️ Duration: ${duration}
+          ⏱️ Duration: ${duration}${brakingLine}
         `)
         .addTo(map);
     });
@@ -600,6 +849,8 @@ map.on('load', async () => {
       }
     });
 
+    setupBrakingLayer(geojson);
+    await setupBrakingHotspots();   // NEW
     await setupAveragedSegments();
 
     setupControls();
@@ -624,7 +875,7 @@ map.on('load', async () => {
 });
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
-function isFilteredMode() { return showSpeedColors || showRoadQuality || showAveragedSegments || searchActive; }
+function isFilteredMode() { return showSpeedColors || showRoadQuality || showAveragedSegments || showBraking || searchActive; }
 
 function updateStatsVisibility() {
   const statsEl = document.getElementById('stats');
@@ -636,7 +887,7 @@ function updateStatsVisibility() {
 window.addEventListener('resize', updateStatsVisibility);
 
 function updateLegendPositions() {
-  const order   = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','sensorLegend'];
+  const order   = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','brakingLegend','sensorLegend'];
   const visible = order.map(id => document.getElementById(id)).filter(el => el && el.style.display === 'block');
   const mobile  = window.matchMedia('(max-width: 768px)').matches;
   updateStatsVisibility();
@@ -686,23 +937,71 @@ function setupAveragedSegmentControls() {
   });
 }
 
-// ─── Re-applies whichever colour layer is active, scoped to any current
-//     selection. Call this whenever showSpeedColors / showRoadQuality changes
-//     while a filter is already active.
+// ─── Braking controls (per-segment + hotspot sub-toggle) ─────────────────────
+function setupBrakingControls() {
+  const cb = document.getElementById('brakingCheckbox');
+  if (!cb) return;
+
+  cb.addEventListener('change', e => {
+    showBraking = e.target.checked;
+    const legend       = document.getElementById('brakingLegend');
+    const hotspotGroup = document.getElementById('brakingHotspotsGroup');
+    const visibility   = showBraking ? 'visible' : 'none';
+
+    // Per-segment layers
+    if (map.getLayer('braking-layer')) map.setLayoutProperty('braking-layer', 'visibility', visibility);
+    if (map.getLayer('braking-halo'))  map.setLayoutProperty('braking-halo',  'visibility', visibility);
+
+    // Show/hide hotspot sub-group toggle
+    if (hotspotGroup) hotspotGroup.style.display = showBraking ? 'block' : 'none';
+
+    // If braking is turned off, also hide hotspots regardless of sub-toggle state
+    if (!showBraking) {
+      ['braking-hotspots-halo', 'braking-hotspots-dot', 'braking-hotspots-label'].forEach(id => {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+      });
+      showBrakingHotspots = false;
+      const hotspotCb = document.getElementById('brakingHotspotsCheckbox');
+      if (hotspotCb) hotspotCb.checked = false;
+    }
+
+    if (legend) legend.style.display = showBraking ? 'block' : 'none';
+
+    updateResetButtonVisibility();
+    setTimeout(updateLegendPositions, 50);
+    updateStatsVisibility();
+  });
+
+  // Hotspot sub-toggle
+  const hotspotCb = document.getElementById('brakingHotspotsCheckbox');
+  if (hotspotCb) {
+    hotspotCb.addEventListener('change', e => {
+      showBrakingHotspots = e.target.checked;
+      const v = showBraking && showBrakingHotspots ? 'visible' : 'none';
+      ['braking-hotspots-halo', 'braking-hotspots-dot', 'braking-hotspots-label'].forEach(id => {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
+      });
+
+      // Show/hide hotspot legend section
+      const hotspotLegendItems = document.getElementById('hotspotLegendItems');
+      if (hotspotLegendItems) hotspotLegendItems.style.display = showBrakingHotspots ? 'block' : 'none';
+    });
+  }
+}
+
+// ─── Re-applies colour layer scoped to any current selection ──────────────────
 function refreshTripLayerColor() {
   if (!map.getLayer('trips-layer')) return;
 
   const selectedIds = getSelectedTripIds();
 
   if (!selectedIds) {
-    // No selection — paint everything normally
     map.setPaintProperty('trips-layer', 'line-color', currentColorExpression());
     map.setPaintProperty('trips-layer', 'line-opacity', 0.7);
     map.setPaintProperty('trips-layer', 'line-width', 3);
     return;
   }
 
-  // Selection is active — show data colour only for selected, hide the rest
   const baseExpr = currentColorExpression();
   const isSingle = selectedIds.length === 1;
 
@@ -730,8 +1029,8 @@ function setupControls() {
   if (resetBtn) resetBtn.addEventListener('click', resetSelection);
 
   // Search
-  const searchInput  = document.getElementById('tripSearchInput');
-  const searchButton = document.getElementById('tripSearchButton');
+  const searchInput   = document.getElementById('tripSearchInput');
+  const searchButton  = document.getElementById('tripSearchButton');
   const suggestionBox = document.getElementById('searchSuggestions');
 
   if (searchInput && searchButton && suggestionBox) {
@@ -778,7 +1077,7 @@ function setupControls() {
       showSpeedColors = e.target.checked;
       if (showSpeedColors && showRoadQuality) {
         showRoadQuality = false;
-        document.getElementById('roadQualityCheckbox').checked  = false;
+        document.getElementById('roadQualityCheckbox').checked     = false;
         document.getElementById('roadQualityLegend').style.display = 'none';
       }
       const legend    = document.getElementById('speedLegend');
@@ -790,7 +1089,6 @@ function setupControls() {
         if (legend)    legend.style.display    = 'none';
         if (modeGroup) modeGroup.style.display = 'none';
       }
-      // KEY FIX: always go through refreshTripLayerColor so selection scope is respected
       refreshTripLayerColor();
       updateResetButtonVisibility();
       setTimeout(updateLegendPositions, 50);
@@ -805,9 +1103,9 @@ function setupControls() {
       showRoadQuality = e.target.checked;
       if (showRoadQuality && showSpeedColors) {
         showSpeedColors = false;
-        document.getElementById('speedColorsCheckbox').checked   = false;
-        document.getElementById('speedLegend').style.display     = 'none';
-        document.getElementById('speedModeGroup').style.display  = 'none';
+        document.getElementById('speedColorsCheckbox').checked    = false;
+        document.getElementById('speedLegend').style.display      = 'none';
+        document.getElementById('speedModeGroup').style.display   = 'none';
       }
       const legend = document.getElementById('roadQualityLegend');
       if (showRoadQuality) {
@@ -815,7 +1113,6 @@ function setupControls() {
       } else {
         if (legend) legend.style.display = 'none';
       }
-      // KEY FIX: always go through refreshTripLayerColor so selection scope is respected
       refreshTripLayerColor();
       updateResetButtonVisibility();
       updateLegendPositions();
@@ -831,6 +1128,7 @@ function setupControls() {
   });
 
   setupAveragedSegmentControls();
+  setupBrakingControls();
 
   const isoToggle = document.getElementById('isoToggle');
   if (isoToggle) isoToggle.addEventListener('change', e => updateIsochrone(e.target.checked));
