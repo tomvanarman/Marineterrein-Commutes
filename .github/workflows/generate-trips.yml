@@ -40,7 +40,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add trips.geojson road_segments_averaged.json braking_hotspots.json
+          git add trips.geojson road_segments_averaged.json 
 
           # Only commit if any file actually changed
           if git diff --cached --quiet; then
@@ -48,12 +48,12 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore: regenerate trips.geojson + road_segments_averaged.json + braking_hotspots.json [skip ci]"
+          git commit -m "chore: regenerate trips.geojson + road_segments_averaged.json [skip ci]"
 
           # Pull latest remote changes, keep our freshly generated files
           git fetch origin main
           git checkout origin/main -- .
-          git checkout HEAD -- trips.geojson road_segments_averaged.json braking_hotspots.json
+          git checkout HEAD -- trips.geojson road_segments_averaged.json 
           git add trips.geojson road_segments_averaged.json
-          git commit --allow-empty -m "chore: regenerate trips + road segments + braking hotspots [skip ci]"
+          git commit --allow-empty -m "chore: regenerate trips + road segments [skip ci]"
           git push origin HEAD:main
