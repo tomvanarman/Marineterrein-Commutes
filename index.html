@@ -72,10 +72,10 @@
         </p>
         <h5>Sudden Braking</h5>
         <p>
-          Flags segments where deceleration exceeded 5 km/h per second. Individual
-          events are shown as dots; enabling <em>Show accumulation hotspots</em> overlays
-          larger circles where braking recurs across multiple trips — useful for
-          identifying dangerous intersections or road features.
+          Flags locations where deceleration exceeded 5 km/h per second, accumulated
+          across all trips. Each circle represents a hotspot: the larger and redder it is,
+          the more braking events occurred at that location — useful for identifying
+          dangerous intersections or road features.
         </p>
       </section>
       <section>
@@ -205,14 +205,6 @@
       <label class="checkbox-label">
         <input type="checkbox" id="brakingCheckbox">
         Sudden Braking
-      </label>
-    </div>
-
-    <!-- Sub-toggle: hidden until parent checkbox is on -->
-    <div class="control-group" id="brakingHotspotsGroup" style="padding-left:1.4rem; display:none;">
-      <label class="checkbox-label">
-        <input type="checkbox" id="brakingHotspotsCheckbox">
-        Show accumulation hotspots
       </label>
     </div>
 
@@ -393,37 +385,21 @@
     </div>
   </div>
 
-  <!-- ── Braking legend (per-segment + hotspot sub-section) ──────────────── -->
+  <!-- ── Braking legend ───────────────────────────────────────────────────── -->
   <div class="legend" id="brakingLegend" style="display:none;">
     <h4>🛑 Sudden Braking</h4>
+    <p style="margin:0 0 6px; font-size:0.75rem; opacity:0.8;">Circle size = number of events</p>
     <div class="speed-legend-item">
       <div class="speed-color-box" style="background: #FFF176;"></div>
-      <span>Gentle (5–10 km/h/s)</span>
+      <span>1–2 events</span>
     </div>
     <div class="speed-legend-item">
       <div class="speed-color-box" style="background: #FF9800;"></div>
-      <span>Hard (10–20 km/h/s)</span>
+      <span>3–7 events</span>
     </div>
     <div class="speed-legend-item">
       <div class="speed-color-box" style="background: #D32F2F;"></div>
-      <span>Emergency (20+ km/h/s)</span>
-    </div>
-
-    <!-- Hotspot sub-legend: revealed when "Show accumulation hotspots" is on -->
-    <div id="hotspotLegendItems" style="display:none; margin-top:8px; border-top:1px solid rgba(255,255,255,0.2); padding-top:8px;">
-      <p style="margin:0 0 4px; font-size:0.75rem; opacity:0.8;">Hotspot size = event count</p>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #FFF176;"></div>
-        <span>1–2 events</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #FF9800;"></div>
-        <span>3–7 events</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #D32F2F;"></div>
-        <span>8+ events</span>
-      </div>
+      <span>8+ events</span>
     </div>
   </div>
 

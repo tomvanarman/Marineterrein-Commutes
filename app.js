@@ -31,7 +31,6 @@ let averagedSegmentMode = 'composite';
 let searchActive = false;
 let activeFilter = null;
 let showBraking = false;
-let showBrakingHotspots = false;  // NEW: accumulation hotspot toggle
 
 // ─── Sensor colours ───────────────────────────────────────────────────────────
 const SENSOR_COLORS = [
@@ -82,28 +81,6 @@ function getAveragedQualityColorExpression() {
 }
 function getCompositeScoreColorExpression() {
   return ['interpolate', ['linear'], ['get', 'composite_score'], 0,'#22C55E', 25,'#84CC16', 50,'#FACC15', 75,'#F97316', 100,'#DC2626'];
-}
-
-// ─── Braking per-segment colour ───────────────────────────────────────────────
-function getBrakingColorExpression() {
-  return [
-    'interpolate', ['linear'],
-    ['to-number', ['coalesce', ['get', 'braking_intensity'], 0]],
-    5,  '#FFF176',
-    10, '#FF9800',
-    20, '#D32F2F',
-  ];
-}
-
-// ─── Braking hotspot colour (count-driven) ────────────────────────────────────
-function getHotspotColorExpression() {
-  return [
-    'interpolate', ['linear'],
-    ['to-number', ['get', 'count']],
-    1, '#FFF176',
-    3, '#FF9800',
-    8, '#D32F2F',
-  ];
 }
 
 function getQualityLabel(q) {
@@ -172,20 +149,6 @@ async function loadAveragedSegments() {
   return null;
 }
 
-// NEW: load pre-aggregated braking hotspots
-async function loadBrakingHotspots() {
-  try {
-    const r = await fetch('./braking_hotspots.json');
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-    console.log(`✅ Loaded ${data.features.length} braking hotspots`);
-    return data;
-  } catch (err) {
-    console.warn('⚠️ Could not load braking_hotspots.json — hotspot layer disabled:', err.message);
-    return null;
-  }
-}
-
 // ─── Stats helpers ────────────────────────────────────────────────────────────
 function getTripStats(tripId) {
   if (!tripsMetadata) return null;
@@ -251,16 +214,6 @@ function getSelectedTripIds() {
   return Array.isArray(activeFilter) ? activeFilter : [activeFilter];
 }
 
-function buildFilteredColorExpression(baseExpr, selectedIds) {
-  if (!selectedIds || selectedIds.length === 0) return baseExpr;
-  return [
-    'case',
-    ['in', ['get', 'trip_id'], ['literal', selectedIds]],
-    baseExpr,
-    'rgba(0,0,0,0)'
-  ];
-}
-
 function applyTripFilter(filterTripId) {
   activeFilter = filterTripId;
   if (!map.getLayer('trips-layer')) return;
@@ -285,22 +238,10 @@ function applyTripFilter(filterTripId) {
     map.setPaintProperty('trips-layer', 'line-width', [
       'case', ['==', ['get', 'trip_id'], filterTripId], 4, 0
     ]);
-
-    if (map.getLayer('braking-layer')) {
-      map.setFilter('braking-layer', [
-        'all',
-        ['==', ['get', 'is_braking'], true],
-        ['==', ['get', 'trip_id'], filterTripId],
-      ]);
-    }
   } else {
     map.setPaintProperty('trips-layer', 'line-color', currentColorExpression());
     map.setPaintProperty('trips-layer', 'line-opacity', 0.7);
     map.setPaintProperty('trips-layer', 'line-width', 3);
-
-    if (map.getLayer('braking-layer')) {
-      map.setFilter('braking-layer', ['==', ['get', 'is_braking'], true]);
-    }
   }
 }
 
@@ -328,14 +269,6 @@ function applyGroupFilter(matchingIds) {
   map.setPaintProperty('trips-layer', 'line-width', [
     'case', ['in', ['get', 'trip_id'], ['literal', [...set]]], 4, 0
   ]);
-
-  if (map.getLayer('braking-layer')) {
-    map.setFilter('braking-layer', [
-      'all',
-      ['==', ['get', 'is_braking'], true],
-      ['in', ['get', 'trip_id'], ['literal', [...set]]],
-    ]);
-  }
 }
 
 // ─── Selection / search ───────────────────────────────────────────────────────
@@ -347,22 +280,15 @@ function resetSelection() {
   showRoadQuality      = false;
   showAveragedSegments = false;
   showBraking          = false;
-  showBrakingHotspots  = false;  // NEW
 
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
 
   // Uncheck all filter checkboxes
-  const speedCb        = document.getElementById('speedColorsCheckbox');
-  const qualityCb      = document.getElementById('roadQualityCheckbox');
-  const avgCb          = document.getElementById('averagedSegmentsCheckbox');
-  const brakingCb      = document.getElementById('brakingCheckbox');
-  const hotspotCb      = document.getElementById('brakingHotspotsCheckbox');  // NEW
-  if (speedCb)        speedCb.checked        = false;
-  if (qualityCb)      qualityCb.checked      = false;
-  if (avgCb)          avgCb.checked          = false;
-  if (brakingCb)      brakingCb.checked      = false;
-  if (hotspotCb)      hotspotCb.checked      = false;  // NEW
+  ['speedColorsCheckbox','roadQualityCheckbox','averagedSegmentsCheckbox','brakingCheckbox'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = false;
+  });
 
   // Hide all legends and mode groups
   document.getElementById('speedLegend').style.display            = 'none';
@@ -370,23 +296,16 @@ function resetSelection() {
   document.getElementById('roadQualityLegend').style.display      = 'none';
   document.getElementById('averagedSegmentsLegend').style.display = 'none';
   document.getElementById('averagedModeGroup').style.display      = 'none';
-  const brakingLegend    = document.getElementById('brakingLegend');
-  const hotspotSubGroup  = document.getElementById('brakingHotspotsGroup');  // NEW
-  if (brakingLegend)   brakingLegend.style.display   = 'none';
-  if (hotspotSubGroup) hotspotSubGroup.style.display  = 'none';  // NEW
+  const brakingLegend = document.getElementById('brakingLegend');
+  if (brakingLegend) brakingLegend.style.display = 'none';
 
   // Restore layers
   if (map.getLayer('averaged-segments'))
     map.setLayoutProperty('averaged-segments', 'visibility', 'none');
-  if (map.getLayer('braking-layer'))
-    map.setLayoutProperty('braking-layer', 'visibility', 'none');
-  if (map.getLayer('braking-halo'))
-    map.setLayoutProperty('braking-halo', 'visibility', 'none');
-
-  // NEW: hide hotspot layers
-  ['braking-hotspots-halo', 'braking-hotspots-dot', 'braking-hotspots-label'].forEach(id => {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
-  });
+  if (map.getLayer('braking-hotspots-halo'))
+    map.setLayoutProperty('braking-hotspots-halo', 'visibility', 'none');
+  if (map.getLayer('braking-hotspots-dot'))
+    map.setLayoutProperty('braking-hotspots-dot', 'visibility', 'none');
 
   if (map.getLayer('trips-layer')) {
     map.setLayoutProperty('trips-layer', 'visibility', 'visible');
@@ -549,102 +468,79 @@ async function setupAveragedSegments() {
   console.log('✅ Averaged segments layer added');
 }
 
-// ─── Per-segment braking layer ────────────────────────────────────────────────
-function setupBrakingLayer(geojson) {
-  const brakingFeatures = (geojson.features || [])
-    .filter(f => f.properties.is_braking === true)
-    .map(f => {
-      const coords = f.geometry.coordinates;
-      const midIdx = Math.floor(coords.length / 2);
-      const [lng, lat] = coords[midIdx] || coords[0];
-      return {
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [lng, lat] },
-        properties: f.properties,
-      };
-    });
+// ─── Braking hotspot accumulation ────────────────────────────────────────────
+//
+// Instead of a separate pre-built file, we accumulate directly from the loaded
+// trip features. Braking events are snapped to a ~25m grid (0.0002° cells) and
+// counted. Each cell becomes one circle whose size and colour reflect how many
+// events occurred there across all trips.
+//
+function buildBrakingHotspots(features) {
+  const CELL_SIZE = 0.0002; // ~22m at Amsterdam latitude
+  const grid = new Map();
 
-  console.log(`🛑 ${brakingFeatures.length} braking events found`);
+  for (const f of features) {
+    if (!f.properties.is_braking) continue;
 
-  map.addSource('braking', {
-    type: 'geojson',
-    data: { type: 'FeatureCollection', features: brakingFeatures },
-  });
+    const coords = f.geometry.coordinates;
+    const mid    = coords[Math.floor(coords.length / 2)] || coords[0];
+    const [lng, lat] = mid;
 
-  // Outer glow ring
-  map.addLayer({
-    id: 'braking-halo',
-    type: 'circle',
-    source: 'braking',
-    layout: { visibility: 'none' },
-    filter: ['==', ['get', 'is_braking'], true],
-    paint: {
-      'circle-color':           getBrakingColorExpression(),
-      'circle-radius':          ['interpolate', ['linear'], ['zoom'], 10, 10, 14, 18, 17, 28],
-      'circle-blur':            1.0,
-      'circle-opacity':         0.35,
-      'circle-pitch-alignment': 'map',
+    // Snap to grid cell
+    const cellLng = Math.round(lng / CELL_SIZE) * CELL_SIZE;
+    const cellLat = Math.round(lat / CELL_SIZE) * CELL_SIZE;
+    const key     = `${cellLng.toFixed(4)},${cellLat.toFixed(4)}`;
+
+    if (!grid.has(key)) {
+      grid.set(key, {
+        lng: cellLng,
+        lat: cellLat,
+        count: 0,
+        totalIntensity: 0,
+        maxIntensity: 0,
+        trips: new Set(),
+      });
+    }
+
+    const cell = grid.get(key);
+    cell.count++;
+    cell.totalIntensity += f.properties.braking_intensity || 0;
+    cell.maxIntensity    = Math.max(cell.maxIntensity, f.properties.braking_intensity || 0);
+    cell.trips.add(f.properties.trip_id);
+  }
+
+  const hotspotFeatures = [...grid.values()].map(cell => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [cell.lng, cell.lat] },
+    properties: {
+      count:         cell.count,
+      avg_intensity: parseFloat((cell.totalIntensity / cell.count).toFixed(1)),
+      max_intensity: parseFloat(cell.maxIntensity.toFixed(1)),
+      trip_count:    cell.trips.size,
     },
-  });
+  }));
 
-  // Solid dot
-  map.addLayer({
-    id: 'braking-layer',
-    type: 'circle',
-    source: 'braking',
-    layout: { visibility: 'none' },
-    filter: ['==', ['get', 'is_braking'], true],
-    paint: {
-      'circle-color':           getBrakingColorExpression(),
-      'circle-radius':          ['interpolate', ['linear'], ['zoom'], 10, 4, 14, 7, 17, 11],
-      'circle-opacity':         0.9,
-      'circle-stroke-width':    1.5,
-      'circle-stroke-color':    'rgba(0,0,0,0.6)',
-      'circle-pitch-alignment': 'map',
-    },
-  });
-
-  map.on('click', 'braking-layer', (e) => {
-    e.preventDefault();
-    if (e.originalEvent) e.originalEvent.stopPropagation();
-    const p = e.features[0].properties;
-    const intensity = parseFloat(p.braking_intensity || 0).toFixed(1);
-    const speed     = parseFloat(p.Speed || 0).toFixed(1);
-    const timeDiff  = p.time_diff_s != null ? `${parseFloat(p.time_diff_s).toFixed(2)}s` : 'estimated';
-    const tripName  = (p.trip_id || '').replace(/_/g, ' ').trim();
-
-    let severity = 'Gentle';
-    if (p.braking_intensity >= 20) severity = 'Emergency';
-    else if (p.braking_intensity >= 10) severity = 'Hard';
-    else if (p.braking_intensity >= 5)  severity = 'Firm';
-
-    new mapboxgl.Popup()
-      .setLngLat(e.lngLat)
-      .setHTML(`
-        <strong>🛑 Sudden Braking</strong><br>
-        ⚡ Deceleration: ${intensity} km/h/s<br>
-        🏷️ Severity: ${severity}<br>
-        🚴 Speed at event: ${speed} km/h<br>
-        ⏱️ Segment duration: ${timeDiff}<br>
-        🗺️ Trip: ${tripName}
-      `)
-      .addTo(map);
-  });
-
-  map.on('mouseenter', 'braking-layer', () => { map.getCanvas().style.cursor = 'pointer'; });
-  map.on('mouseleave', 'braking-layer', () => { map.getCanvas().style.cursor = ''; });
-
-  console.log('✅ Per-segment braking layer added');
+  console.log(`🛑 Built ${hotspotFeatures.length} braking hotspot cells from ${[...grid.values()].reduce((s, c) => s + c.count, 0)} events`);
+  return { type: 'FeatureCollection', features: hotspotFeatures };
 }
 
-// ─── Braking hotspot accumulation layer ──────────────────────────────────────
-async function setupBrakingHotspots() {
-  const data = await loadBrakingHotspots();
-  if (!data) return;
+// Colour: yellow → orange → red driven by event count
+function getHotspotColorExpression() {
+  return [
+    'interpolate', ['linear'],
+    ['to-number', ['get', 'count']],
+    1, '#FFF176',
+    3, '#FF9800',
+    8, '#D32F2F',
+  ];
+}
 
-  map.addSource('braking-hotspots', { type: 'geojson', data });
+function setupBrakingLayer(geojson) {
+  const hotspotData = buildBrakingHotspots(geojson.features || []);
 
-  // Outer glow — radius and colour scale with event count
+  map.addSource('braking-hotspots', { type: 'geojson', data: hotspotData });
+
+  // Outer glow — radius scales with both zoom and event count
   map.addLayer({
     id: 'braking-hotspots-halo',
     type: 'circle',
@@ -654,9 +550,9 @@ async function setupBrakingHotspots() {
       'circle-color': getHotspotColorExpression(),
       'circle-radius': [
         'interpolate', ['linear'], ['zoom'],
-        10, ['interpolate', ['linear'], ['get', 'count'],  1, 14,  5, 22, 15, 36],
-        14, ['interpolate', ['linear'], ['get', 'count'],  1, 22,  5, 36, 15, 56],
-        17, ['interpolate', ['linear'], ['get', 'count'],  1, 34,  5, 54, 15, 80],
+        10, ['interpolate', ['linear'], ['get', 'count'],  1, 12,  5, 20, 15, 34],
+        14, ['interpolate', ['linear'], ['get', 'count'],  1, 20,  5, 32, 15, 52],
+        17, ['interpolate', ['linear'], ['get', 'count'],  1, 30,  5, 50, 15, 75],
       ],
       'circle-blur':            1.2,
       'circle-opacity':         0.35,
@@ -664,7 +560,7 @@ async function setupBrakingHotspots() {
     },
   });
 
-  // Solid dot — also scales with count
+  // Solid dot
   map.addLayer({
     id: 'braking-hotspots-dot',
     type: 'circle',
@@ -674,41 +570,27 @@ async function setupBrakingHotspots() {
       'circle-color': getHotspotColorExpression(),
       'circle-radius': [
         'interpolate', ['linear'], ['zoom'],
-        10, ['interpolate', ['linear'], ['get', 'count'],  1,  5,  5,  9, 15, 15],
-        14, ['interpolate', ['linear'], ['get', 'count'],  1,  8,  5, 14, 15, 22],
-        17, ['interpolate', ['linear'], ['get', 'count'],  1, 12,  5, 20, 15, 32],
+        10, ['interpolate', ['linear'], ['get', 'count'],  1,  4,  5,  8, 15, 14],
+        14, ['interpolate', ['linear'], ['get', 'count'],  1,  7,  5, 13, 15, 20],
+        17, ['interpolate', ['linear'], ['get', 'count'],  1, 11,  5, 18, 15, 28],
       ],
-      'circle-opacity':         0.9,
+      'circle-opacity':         0.85,
       'circle-stroke-width':    1.5,
-      'circle-stroke-color':    'rgba(0,0,0,0.6)',
+      'circle-stroke-color':    'rgba(0,0,0,0.5)',
       'circle-pitch-alignment': 'map',
     },
-  });
-
-  // Count label — only visible when zoomed in
-  map.addLayer({
-    id: 'braking-hotspots-label',
-    type: 'symbol',
-    source: 'braking-hotspots',
-    layout: {
-      visibility:           'none',
-      'text-field':         ['to-string', ['get', 'count']],
-      'text-size':          12,
-      'text-font':          ['Open Sans Bold', 'Arial Unicode MS Bold'],
-      'text-allow-overlap': true,
-    },
-    paint: {
-      'text-color':       '#ffffff',
-      'text-halo-color':  'rgba(0,0,0,0.7)',
-      'text-halo-width':  1.5,
-    },
-    minzoom: 13,
   });
 
   map.on('click', 'braking-hotspots-dot', (e) => {
     e.preventDefault();
     if (e.originalEvent) e.originalEvent.stopPropagation();
     const p = e.features[0].properties;
+
+    let severity = 'Low';
+    if (p.avg_intensity >= 20) severity = 'Emergency';
+    else if (p.avg_intensity >= 10) severity = 'Hard';
+    else if (p.avg_intensity >= 5)  severity = 'Firm';
+
     new mapboxgl.Popup()
       .setLngLat(e.lngLat)
       .setHTML(`
@@ -716,7 +598,7 @@ async function setupBrakingHotspots() {
         📍 Events here: <strong>${p.count}</strong><br>
         ⚡ Avg deceleration: ${p.avg_intensity} km/h/s<br>
         🏎️ Peak deceleration: ${p.max_intensity} km/h/s<br>
-        🏷️ Severity: ${p.severity}<br>
+        🏷️ Severity: ${severity}<br>
         🚲 Across ${p.trip_count} trip(s)
       `)
       .addTo(map);
@@ -725,7 +607,7 @@ async function setupBrakingHotspots() {
   map.on('mouseenter', 'braking-hotspots-dot', () => { map.getCanvas().style.cursor = 'pointer'; });
   map.on('mouseleave', 'braking-hotspots-dot', () => { map.getCanvas().style.cursor = ''; });
 
-  console.log('✅ Braking hotspots layer added');
+  console.log('✅ Braking hotspot layer added');
 }
 
 // ─── Isochrone ────────────────────────────────────────────────────────────────
@@ -850,7 +732,6 @@ map.on('load', async () => {
     });
 
     setupBrakingLayer(geojson);
-    await setupBrakingHotspots();   // NEW
     await setupAveragedSegments();
 
     setupControls();
@@ -937,33 +818,18 @@ function setupAveragedSegmentControls() {
   });
 }
 
-// ─── Braking controls (per-segment + hotspot sub-toggle) ─────────────────────
+// ─── Braking controls ─────────────────────────────────────────────────────────
 function setupBrakingControls() {
   const cb = document.getElementById('brakingCheckbox');
   if (!cb) return;
 
   cb.addEventListener('change', e => {
     showBraking = e.target.checked;
-    const legend       = document.getElementById('brakingLegend');
-    const hotspotGroup = document.getElementById('brakingHotspotsGroup');
-    const visibility   = showBraking ? 'visible' : 'none';
+    const legend     = document.getElementById('brakingLegend');
+    const visibility = showBraking ? 'visible' : 'none';
 
-    // Per-segment layers
-    if (map.getLayer('braking-layer')) map.setLayoutProperty('braking-layer', 'visibility', visibility);
-    if (map.getLayer('braking-halo'))  map.setLayoutProperty('braking-halo',  'visibility', visibility);
-
-    // Show/hide hotspot sub-group toggle
-    if (hotspotGroup) hotspotGroup.style.display = showBraking ? 'block' : 'none';
-
-    // If braking is turned off, also hide hotspots regardless of sub-toggle state
-    if (!showBraking) {
-      ['braking-hotspots-halo', 'braking-hotspots-dot', 'braking-hotspots-label'].forEach(id => {
-        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
-      });
-      showBrakingHotspots = false;
-      const hotspotCb = document.getElementById('brakingHotspotsCheckbox');
-      if (hotspotCb) hotspotCb.checked = false;
-    }
+    if (map.getLayer('braking-hotspots-halo')) map.setLayoutProperty('braking-hotspots-halo', 'visibility', visibility);
+    if (map.getLayer('braking-hotspots-dot'))  map.setLayoutProperty('braking-hotspots-dot',  'visibility', visibility);
 
     if (legend) legend.style.display = showBraking ? 'block' : 'none';
 
@@ -971,22 +837,6 @@ function setupBrakingControls() {
     setTimeout(updateLegendPositions, 50);
     updateStatsVisibility();
   });
-
-  // Hotspot sub-toggle
-  const hotspotCb = document.getElementById('brakingHotspotsCheckbox');
-  if (hotspotCb) {
-    hotspotCb.addEventListener('change', e => {
-      showBrakingHotspots = e.target.checked;
-      const v = showBraking && showBrakingHotspots ? 'visible' : 'none';
-      ['braking-hotspots-halo', 'braking-hotspots-dot', 'braking-hotspots-label'].forEach(id => {
-        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', v);
-      });
-
-      // Show/hide hotspot legend section
-      const hotspotLegendItems = document.getElementById('hotspotLegendItems');
-      if (hotspotLegendItems) hotspotLegendItems.style.display = showBrakingHotspots ? 'block' : 'none';
-    });
-  }
 }
 
 // ─── Re-applies colour layer scoped to any current selection ──────────────────
