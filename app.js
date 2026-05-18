@@ -1,4 +1,3 @@
-cat > /mnt/user-data/outputs/app.js << 'ENDOFFILE'
 // app.js
 // Bike Sensor Data Visualization
 // Loads live GeoJSON from Supabase Edge Function — no PMTiles download needed.
@@ -1116,4 +1115,3 @@ function renderSensorLegend() {
 }
 
 window.searchTrip = searchAndHighlightTrip;
-ENDOFFILE
