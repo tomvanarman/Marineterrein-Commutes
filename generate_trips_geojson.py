@@ -48,9 +48,13 @@ INITIAL_DAYS       = None   # None = all trips; set e.g. 90 to limit
 STATEMENT_TIMEOUT  = "30s"
 SPEED_SMOOTH_WIN   = 5      # rolling average window for gnss speed
 
-# Braking detection — keep in sync with integrated_processor.py
+# Braking detection — CSV/wheel-rotation trips (high precision)
 BRAKING_DECEL_THRESHOLD_KMH_S = 40   # km/h per second; only flag genuine hard braking
 BRAKING_INTENSITY_CAP_KMH_S   = 50   # hard ceiling to suppress data artefacts
+
+# Braking detection — API/GNSS trips (speed pre-smoothed, lower peak decels)
+BRAKING_DECEL_THRESHOLD_GPS_KMH_S = 2.0  # tune up to 2.5 to reduce false positives
+
 SPEED_JUMP_THRESHOLD_KMH      = 20   # implausible inter-segment speed change → reset
 MIN_SEGMENT_TIME_S             = 0.5  # GPS fixes are ~1 s apart; below this is noise
 
@@ -282,8 +286,8 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
     One LineString per consecutive gnss point pair.
     Speed   = smoothed gnss.speed (already in km/h), capped at MAX_SPEED_KMH.
     Quality = from decoded acc_y via timestamp lookup.
-    Braking = detected from consecutive speed deltas using real timestamps.
-              GPS speed is pre-smoothed so hrot_diff guard is not needed.
+    Braking = detected from consecutive speed deltas using GPS-appropriate threshold.
+              GPS speed is pre-smoothed so peak decels are lower (~2-3 km/h/s max).
     """
     if not gnss_rows:
         return []
@@ -323,13 +327,13 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
         road_quality = quality_lookup(a["timestamp"]) \
                        if quality_lookup and a["timestamp"] else 0
 
-        # Braking detection
+        # Braking detection — use GPS-appropriate threshold (smoothed speed
+        # caps real decels at ~3 km/h/s, far below the CSV threshold of 40)
         braking_intensity = 0.0
         if prev_speed_kmh is not None and time_diff_s is not None:
             if abs(speed_kmh - prev_speed_kmh) > SPEED_JUMP_THRESHOLD_KMH:
                 # Implausible speed jump — reset series, don't flag as braking
                 prev_speed_kmh = speed_kmh
-                # Still append the segment, just with no braking flag
             else:
                 braking_intensity = calculate_braking_intensity(
                     prev_speed_kmh, speed_kmh, time_diff_s
@@ -357,7 +361,7 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
                 "gps_distance_m":    round(dist, 1),
                 "wheel_diameter_mm": wheel_diam_mm,
                 "braking_intensity": braking_intensity,
-                "is_braking":        braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S,
+                "is_braking":        braking_intensity >= BRAKING_DECEL_THRESHOLD_GPS_KMH_S,
             },
         })
 
