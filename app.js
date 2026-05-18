@@ -1,6 +1,5 @@
 // app.js
 // Bike Sensor Data Visualization
-// Loads live GeoJSON from Supabase Edge Function — no PMTiles download needed.
 
 import { CONFIG } from './config.js';
 import { buildLeaderboard, renderLeaderboard } from './leaderboard.js';
@@ -8,7 +7,6 @@ import { buildLeaderboard, renderLeaderboard } from './leaderboard.js';
 console.log('🚀 Starting bike visualization...');
 const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImZhODc1ZmQ3ODRmOTQ3MTNiNWRmMGY2NTcwYjM0YTVjIiwiaCI6Im11cm11cjY0In0=';
 
-// Initialize map
 const map = new mapboxgl.Map({
   container: 'map',
   style: CONFIG.MAP_STYLE,
@@ -31,7 +29,6 @@ let averagedSegmentMode = 'composite';
 let searchActive = false;
 let activeFilter = null;
 let showBraking = false;
-let brakingColorMode = 'concentration'; // 'concentration' | 'severity'
 
 // ─── Sensor colours ───────────────────────────────────────────────────────────
 const SENSOR_COLORS = [
@@ -54,7 +51,6 @@ function getSensorColor(tripId) {
   return sensorColorMap[sensor] || DEFAULT_COLOR;
 }
 
-// ─── First symbol layer ───────────────────────────────────────────────────────
 function getFirstLabelLayerId() {
   const layers = map.getStyle().layers;
   for (const layer of layers) {
@@ -108,10 +104,8 @@ function getCompositeLabel(s) {
   return 'Critical';
 }
 
-// ─── Hotspot colour expressions ───────────────────────────────────────────────
-
-// Concentration mode: colour driven by event count
-function getHotspotConcentrationColorExpression() {
+// ─── Hotspot colour (concentration only) ─────────────────────────────────────
+function getHotspotColorExpression() {
   return [
     'interpolate', ['linear'],
     ['to-number', ['get', 'count']],
@@ -122,33 +116,25 @@ function getHotspotConcentrationColorExpression() {
   ];
 }
 
-// Severity mode: colour driven by avg_intensity (log-scaled to handle GPS ~3 vs CSV ~50)
-// Uses a composite that normalises both GPS and CSV ranges onto the same palette.
-function getHotspotSeverityColorExpression() {
-  return [
-    'interpolate', ['linear'],
-    ['to-number', ['get', 'avg_intensity']],
-    0,   '#FFF176',   // minimal decel
-    2,   '#FFB300',   // GPS moderate (traffic lights)
-    5,   '#FF5722',   // GPS hard / CSV light
-    15,  '#D32F2F',   // CSV firm braking
-    35,  '#9C27B0',   // CSV emergency
-  ];
-}
+// ─── Braking filter helpers ───────────────────────────────────────────────────
+// When a trip is selected while braking is active, filter hotspots to that trip.
+// When deselected, show all hotspots again.
+function applyBrakingTripFilter(tripId) {
+  if (!map.getSource('braking-hotspots')) return;
 
-function getHotspotColorExpression() {
-  return brakingColorMode === 'severity'
-    ? getHotspotSeverityColorExpression()
-    : getHotspotConcentrationColorExpression();
-}
+  const source = map.getSource('trips');
+  const allFeatures = source?._data?.features || [];
 
-// ─── Update braking layer colours when mode toggles ──────────────────────────
-function refreshBrakingColors() {
-  if (!map.getLayer('braking-hotspots-halo')) return;
-  const expr = getHotspotColorExpression();
-  map.setPaintProperty('braking-hotspots-halo', 'circle-color', expr);
-  map.setPaintProperty('braking-hotspots-dot',  'circle-color', expr);
-  updateBrakingLegend();
+  if (tripId) {
+    // Rebuild hotspots for just this trip
+    const tripFeatures = allFeatures.filter(f => f.properties.trip_id === tripId);
+    const filtered = buildBrakingHotspots(tripFeatures);
+    map.getSource('braking-hotspots').setData(filtered);
+  } else {
+    // Restore all hotspots
+    const all = buildBrakingHotspots(allFeatures);
+    map.getSource('braking-hotspots').setData(all);
+  }
 }
 
 // ─── Data loading ─────────────────────────────────────────────────────────────
@@ -238,13 +224,11 @@ function formatDuration(s) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-// ─── Reset button visibility ──────────────────────────────────────────────────
 function updateResetButtonVisibility() {
   const active = showSpeedColors || showRoadQuality || showAveragedSegments || showBraking || searchActive || !!selectedTrip;
   document.getElementById('resetButton').style.display = active ? 'block' : 'none';
 }
 
-// ─── Layer paint helpers ──────────────────────────────────────────────────────
 function currentColorExpression() {
   if (showSpeedColors) return getSpeedColorExpression(speedMode);
   if (showRoadQuality) return getRoadQualityColorExpression();
@@ -284,6 +268,9 @@ function applyTripFilter(filterTripId) {
     map.setPaintProperty('trips-layer', 'line-opacity', 0.7);
     map.setPaintProperty('trips-layer', 'line-width', 3);
   }
+
+  // If braking is active, sync hotspot filter to the selected trip
+  if (showBraking) applyBrakingTripFilter(filterTripId);
 }
 
 function applyGroupFilter(matchingIds) {
@@ -337,8 +324,6 @@ function resetSelection() {
   document.getElementById('averagedModeGroup').style.display      = 'none';
   const brakingLegend = document.getElementById('brakingLegend');
   if (brakingLegend) brakingLegend.style.display = 'none';
-  const brakingModeGroup = document.getElementById('brakingModeGroup');
-  if (brakingModeGroup) brakingModeGroup.style.display = 'none';
 
   if (map.getLayer('averaged-segments'))
     map.setLayoutProperty('averaged-segments', 'visibility', 'none');
@@ -380,6 +365,9 @@ function clearSearch() {
   if (clearBtn) clearBtn.style.display = 'none';
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
+
+  // Restore all braking hotspots when deselecting
+  if (showBraking) applyBrakingTripFilter(null);
 
   document.getElementById('selectedTripRow').style.display  = 'none';
   document.getElementById('statTripRow').style.display      = 'flex';
@@ -601,7 +589,7 @@ function setupBrakingLayer(geojson, labelLayerId) {
     const p = e.features[0].properties;
     let severity = 'Low';
     if (p.avg_intensity >= 15) severity = 'Emergency';
-    else if (p.avg_intensity >= 5)  severity = 'Hard';
+    else if (p.avg_intensity >= 5)   severity = 'Hard';
     else if (p.avg_intensity >= 2.5) severity = 'Firm';
     new mapboxgl.Popup()
       .setLngLat(e.lngLat)
@@ -620,35 +608,6 @@ function setupBrakingLayer(geojson, labelLayerId) {
   map.on('mouseleave', 'braking-hotspots-dot', () => { map.getCanvas().style.cursor = ''; });
 
   console.log('✅ Braking hotspot layer added');
-}
-
-// ─── Braking legend ───────────────────────────────────────────────────────────
-function updateBrakingLegend() {
-  const legend = document.getElementById('brakingLegend');
-  if (!legend) return;
-
-  if (brakingColorMode === 'severity') {
-    legend.innerHTML = `
-      <strong>🔴 SUDDEN BRAKING</strong>
-      <div class="legend-subtitle">Colour = avg deceleration</div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FFF176"></div><span>Minimal (&lt;2 km/h/s)</span></div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FFB300"></div><span>Moderate (2–5)</span></div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FF5722"></div><span>Hard (5–15)</span></div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#D32F2F"></div><span>Firm (15–35)</span></div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#9C27B0"></div><span>Emergency (&gt;35)</span></div>
-      <div class="legend-note">Circle size = number of events</div>
-    `;
-  } else {
-    legend.innerHTML = `
-      <strong>🔴 SUDDEN BRAKING</strong>
-      <div class="legend-subtitle">Colour = event concentration</div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FFF176"></div><span>1–2 events</span></div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FF9800"></div><span>3–7 events</span></div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#D32F2F"></div><span>8–19 events</span></div>
-      <div class="speed-legend-item"><div class="speed-color-box" style="background:#9C27B0"></div><span>20+ events</span></div>
-      <div class="legend-note">Circle size = number of events</div>
-    `;
-  }
 }
 
 // ─── Isochrone ────────────────────────────────────────────────────────────────
@@ -730,9 +689,6 @@ map.on('load', async () => {
     }, labelLayerId);
 
     map.on('click', 'trips-layer', async (e) => {
-      // Don't allow trip selection while braking layer is active
-      if (showBraking) return;
-
       e.preventDefault();
       if (e.originalEvent) e.originalEvent.stopPropagation();
       if (currentPopup) { currentPopup.remove(); }
@@ -743,7 +699,7 @@ map.on('load', async () => {
       const roadQuality = parseInt(props.road_quality || 0);
 
       selectedTrip = tripId;
-      applyTripFilter(tripId);
+      applyTripFilter(tripId); // also filters braking hotspots if showBraking
       showSelection(tripId);
 
       const stats      = getTripStats(tripId);
@@ -785,7 +741,11 @@ map.on('load', async () => {
     map.on('click', e => {
       if (!e.defaultPrevented) {
         if (searchActive) clearSearch();
-        else if (selectedTrip) resetSelection();
+        else if (selectedTrip) {
+          // If braking is active, deselecting restores all hotspots
+          if (showBraking) applyBrakingTripFilter(null);
+          resetSelection();
+        }
       }
     });
 
@@ -880,43 +840,31 @@ function setupAveragedSegmentControls() {
   });
 }
 
-// ─── Braking controls ─────────────────────────────────────────────────────────
 function setupBrakingControls() {
   const cb = document.getElementById('brakingCheckbox');
   if (!cb) return;
 
   cb.addEventListener('change', e => {
     showBraking = e.target.checked;
-    const legend         = document.getElementById('brakingLegend');
-    const brakingModeGroup = document.getElementById('brakingModeGroup');
-    const visibility     = showBraking ? 'visible' : 'none';
+    const legend     = document.getElementById('brakingLegend');
+    const visibility = showBraking ? 'visible' : 'none';
 
     if (map.getLayer('braking-hotspots-halo')) map.setLayoutProperty('braking-hotspots-halo', 'visibility', visibility);
     if (map.getLayer('braking-hotspots-dot'))  map.setLayoutProperty('braking-hotspots-dot',  'visibility', visibility);
 
-    if (legend) {
-      legend.style.display = showBraking ? 'block' : 'none';
-      if (showBraking) updateBrakingLegend();
-    }
-    if (brakingModeGroup) brakingModeGroup.style.display = showBraking ? 'flex' : 'none';
+    if (legend) legend.style.display = showBraking ? 'block' : 'none';
+
+    // When enabling braking, if a trip is already selected filter immediately
+    if (showBraking && selectedTrip) applyBrakingTripFilter(selectedTrip);
+    // When disabling, restore full hotspot data
+    if (!showBraking) applyBrakingTripFilter(null);
 
     updateResetButtonVisibility();
     setTimeout(updateLegendPositions, 50);
     updateStatsVisibility();
   });
-
-  // Colour mode toggle — concentration vs severity
-  document.querySelectorAll('input[name="brakingMode"]').forEach(r => {
-    r.addEventListener('change', e => {
-      brakingColorMode = e.target.value;
-      if (showBraking) {
-        refreshBrakingColors();
-      }
-    });
-  });
 }
 
-// ─── Re-applies colour layer scoped to any current selection ──────────────────
 function refreshTripLayerColor() {
   if (!map.getLayer('trips-layer')) return;
 

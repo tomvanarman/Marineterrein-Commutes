@@ -72,10 +72,25 @@
         </p>
         <h5>Sudden Braking</h5>
         <p>
-          Flags locations where deceleration exceeded 5 km/h per second, accumulated
-          across all trips. Each circle represents a hotspot: the larger and redder it is,
-          the more braking events occurred at that location — useful for identifying
-          dangerous intersections or road features.
+          Flags locations where a cyclist decelerated suddenly, accumulated across all
+          recorded trips. Braking is detected when the speed drop between two consecutive
+          GPS points exceeds <strong>2 km/h per second</strong> — a threshold calibrated
+          to distinguish genuine reactive braking (e.g. at intersections, obstacles, or
+          unsafe road conditions) from normal gradual slowdowns.
+        </p>
+        <p>
+          Each circle on the map represents a hotspot cell approximately 20 metres wide.
+          <strong>Circle size</strong> encodes how many braking events were recorded at
+          that location across all trips. <strong>Colour</strong> encodes concentration:
+          yellow indicates isolated events (1–2), orange indicates repeated braking (3–7),
+          red indicates a high-frequency hotspot (8–19), and purple marks extreme
+          concentration (20+ events). Hotspots with more events across multiple trips are
+          stronger candidates for infrastructure intervention.
+        </p>
+        <p>
+          You can also select an individual trip while the Sudden Braking layer is active —
+          the hotspot map will update to show only the braking events from that trip.
+          Click anywhere off the route to return to the full hotspot view.
         </p>
       </section>
       <section>
@@ -200,7 +215,6 @@
       </label>
     </div>
 
-    <!-- ── Sudden Braking ─────────────────────────────────────────────────── -->
     <div class="control-group">
       <label class="checkbox-label">
         <input type="checkbox" id="brakingCheckbox">
@@ -246,161 +260,60 @@
 
   <div class="legend" id="speedLegend" style="display:none;">
     <h4>Speed (km/h)</h4>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #808080;"></div>
-      <span>Stopped (0–2)</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #DC2626;"></div>
-      <span>Very Slow (2–5)</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #F97316;"></div>
-      <span>Slow (5–10)</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #FACC15;"></div>
-      <span>Moderate (10–15)</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #22C55E;"></div>
-      <span>Fast (15–20)</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #3B82F6;"></div>
-      <span>Very Fast (20–25)</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #bb06d7;"></div>
-      <span>Extreme (25+)</span>
-    </div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#808080;"></div><span>Stopped (0–2)</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#DC2626;"></div><span>Very Slow (2–5)</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#F97316;"></div><span>Slow (5–10)</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#FACC15;"></div><span>Moderate (10–15)</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#22C55E;"></div><span>Fast (15–20)</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#3B82F6;"></div><span>Very Fast (20–25)</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#bb06d7;"></div><span>Extreme (25+)</span></div>
   </div>
 
   <div class="legend" id="roadQualityLegend" style="display:none;">
     <h4>Road Quality</h4>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #22C55E;"></div>
-      <span>1 – Perfect</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #84CC16;"></div>
-      <span>2 – Normal</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #FACC15;"></div>
-      <span>3 – Outdated</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #F97316;"></div>
-      <span>4 – Bad</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #DC2626;"></div>
-      <span>5 – No road</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #808080;"></div>
-      <span>Unknown</span>
-    </div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#22C55E;"></div><span>1 – Perfect</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#84CC16;"></div><span>2 – Normal</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#FACC15;"></div><span>3 – Outdated</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#F97316;"></div><span>4 – Bad</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#DC2626;"></div><span>5 – No road</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#808080;"></div><span>Unknown</span></div>
   </div>
 
   <div class="legend" id="averagedSegmentsLegend" style="display:none;">
     <h4>Averaged Road Segments</h4>
-
-    <!-- Composite Score Legend (default) -->
     <div id="compositeLegendItems">
       <p class="legend-note">Combined score based on quality and speed</p>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #22C55E;"></div>
-        <span>Excellent (0–20)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #84CC16;"></div>
-        <span>Good (20–40)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #FACC15;"></div>
-        <span>Moderate (40–60)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #F97316;"></div>
-        <span>Poor (60–80)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #DC2626;"></div>
-        <span>Critical (80–100)</span>
-      </div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#22C55E;"></div><span>Excellent (0–20)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#84CC16;"></div><span>Good (20–40)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FACC15;"></div><span>Moderate (40–60)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#F97316;"></div><span>Poor (60–80)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#DC2626;"></div><span>Critical (80–100)</span></div>
     </div>
-
-    <!-- Average Speed sub-legend -->
     <div id="avgSpeedLegendItems" style="display:none;">
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #DC2626;"></div>
-        <span>Very Slow (0–5 km/h)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #F97316;"></div>
-        <span>Slow (5–10 km/h)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #FACC15;"></div>
-        <span>Moderate (10–15 km/h)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #22C55E;"></div>
-        <span>Fast (15–20 km/h)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #3B82F6;"></div>
-        <span>Very Fast (20–25 km/h)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #bb06d7;"></div>
-        <span>Extreme (25+ km/h)</span>
-      </div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#DC2626;"></div><span>Very Slow (0–5 km/h)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#F97316;"></div><span>Slow (5–10 km/h)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FACC15;"></div><span>Moderate (10–15 km/h)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#22C55E;"></div><span>Fast (15–20 km/h)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#3B82F6;"></div><span>Very Fast (20–25 km/h)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#bb06d7;"></div><span>Extreme (25+ km/h)</span></div>
     </div>
-
-    <!-- Road Quality sub-legend -->
     <div id="avgQualityLegendItems" style="display:none;">
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #22C55E;"></div>
-        <span>Perfect (1.0–1.5)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #84CC16;"></div>
-        <span>Normal (1.5–2.5)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #FACC15;"></div>
-        <span>Outdated (2.5–3.5)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #F97316;"></div>
-        <span>Bad (3.5–4.5)</span>
-      </div>
-      <div class="speed-legend-item">
-        <div class="speed-color-box" style="background: #DC2626;"></div>
-        <span>No Road (4.5–5.0)</span>
-      </div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#22C55E;"></div><span>Perfect (1.0–1.5)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#84CC16;"></div><span>Normal (1.5–2.5)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FACC15;"></div><span>Outdated (2.5–3.5)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#F97316;"></div><span>Bad (3.5–4.5)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#DC2626;"></div><span>No Road (4.5–5.0)</span></div>
     </div>
   </div>
 
-  <!-- ── Braking legend ───────────────────────────────────────────────────── -->
+  <!-- Braking legend — concentration only -->
   <div class="legend" id="brakingLegend" style="display:none;">
-    <h4>🛑 Sudden Braking</h4>
-    <p style="margin:0 0 6px; font-size:0.75rem; opacity:0.8;">Circle size = number of events</p>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #FFF176;"></div>
-      <span>1–2 events</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #FF9800;"></div>
-      <span>3–7 events</span>
-    </div>
-    <div class="speed-legend-item">
-      <div class="speed-color-box" style="background: #D32F2F;"></div>
-      <span>8+ events</span>
-    </div>
+    <strong>🔴 SUDDEN BRAKING</strong>
+    <p style="margin:4px 0 8px; font-size:0.75rem; opacity:0.8;">Colour &amp; size = event concentration</p>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#FFF176;"></div><span>1–2 events</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#FF9800;"></div><span>3–7 events</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#D32F2F;"></div><span>8–19 events</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#9C27B0;"></div><span>20+ events</span></div>
   </div>
 
   <div class="legend" id="sensorLegend" style="display:none;">
