@@ -73,24 +73,10 @@
         <h5>Sudden Braking</h5>
         <p>
           Flags locations where a cyclist decelerated suddenly, accumulated across all
-          recorded trips. Braking is detected when the speed drop between two consecutive
-          GPS points exceeds <strong>2 km/h per second</strong> — a threshold calibrated
-          to distinguish genuine reactive braking (e.g. at intersections, obstacles, or
-          unsafe road conditions) from normal gradual slowdowns.
-        </p>
-        <p>
-          Each circle on the map represents a hotspot cell approximately 20 metres wide.
-          <strong>Circle size</strong> encodes how many braking events were recorded at
-          that location across all trips. <strong>Colour</strong> encodes concentration:
-          yellow indicates isolated events (1–2), orange indicates repeated braking (3–7),
-          red indicates a high-frequency hotspot (8–19), and purple marks extreme
-          concentration (20+ events). Hotspots with more events across multiple trips are
-          stronger candidates for infrastructure intervention.
-        </p>
-        <p>
-          You can also select an individual trip while the Sudden Braking layer is active —
-          the hotspot map will update to show only the braking events from that trip.
-          Click anywhere off the route to return to the full hotspot view.
+          recorded trips. Braking is detected when a cyclist decelerates at more than 2 km/h per second— 
+          meaning speed drops by at least 2 km/h within a single one-second GPS interval.
+          This threshold was adjusted so as to distinguish genuine sudden braking (e.g. at 
+          intersections, obstacles, or unsafe road conditions) from normal slowdowns.
         </p>
       </section>
       <section>
