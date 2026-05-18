@@ -300,35 +300,6 @@ function applyGroupFilter(matchingIds) {
 }
 
 // ─── Selection / search ───────────────────────────────────────────────────────
-
-// Deselects the current trip but keeps layers (including braking) intact.
-// Called when clicking off a route on the map.
-function deselectTrip() {
-  selectedTrip = null;
-  activeFilter = null;
-  if (currentPopup) { currentPopup.remove(); currentPopup = null; }
-
-  // Restore full braking hotspots if layer is active
-  if (showBraking) applyBrakingTripFilter(null);
-
-  // Restore trip line to full view
-  if (map.getLayer('trips-layer')) {
-    map.setPaintProperty('trips-layer', 'line-color', currentColorExpression());
-    map.setPaintProperty('trips-layer', 'line-opacity', 0.7);
-    map.setPaintProperty('trips-layer', 'line-width', 3);
-  }
-
-  document.getElementById('selectedTripRow').style.display  = 'none';
-  document.getElementById('statTripRow').style.display      = 'flex';
-  document.getElementById('statDistanceRow').style.display  = 'flex';
-  document.getElementById('statAvgSpeedRow').style.display  = 'flex';
-  document.getElementById('statTotalTimeRow').style.display = 'flex';
-
-  updateResetButtonVisibility();
-  updateStatsVisibility();
-}
-
-// Full reset — clears everything including layers. Used by the Reset button.
 function resetSelection() {
   selectedTrip         = null;
   activeFilter         = null;
@@ -770,7 +741,11 @@ map.on('load', async () => {
     map.on('click', e => {
       if (!e.defaultPrevented) {
         if (searchActive) clearSearch();
-        else if (selectedTrip) deselectTrip();
+        else if (selectedTrip) {
+          // If braking is active, deselecting restores all hotspots
+          if (showBraking) applyBrakingTripFilter(null);
+          resetSelection();
+        }
       }
     });
 
