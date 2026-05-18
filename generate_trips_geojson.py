@@ -11,7 +11,8 @@ the local version wins.
 
 Supabase trips use gnss.speed directly (already in km/h) with a 5-point
 rolling average to smooth GPS noise. Road quality is calculated from
-decoded acc_y via road_quality_calculator.py.
+decoded acc_y via road_quality_calculator.py. Braking is detected from
+consecutive speed deltas using the same threshold as integrated_processor.py.
 
 Run: python generate_trips_geojson.py
 """
@@ -46,6 +47,12 @@ TRIM_M             = 100
 INITIAL_DAYS       = None   # None = all trips; set e.g. 90 to limit
 STATEMENT_TIMEOUT  = "30s"
 SPEED_SMOOTH_WIN   = 5      # rolling average window for gnss speed
+
+# Braking detection — keep in sync with integrated_processor.py
+BRAKING_DECEL_THRESHOLD_KMH_S = 40   # km/h per second; only flag genuine hard braking
+BRAKING_INTENSITY_CAP_KMH_S   = 50   # hard ceiling to suppress data artefacts
+SPEED_JUMP_THRESHOLD_KMH      = 20   # implausible inter-segment speed change → reset
+MIN_SEGMENT_TIME_S             = 0.5  # GPS fixes are ~1 s apart; below this is noise
 
 # ── DB connection ─────────────────────────────────────────────────────────────
 
@@ -219,6 +226,20 @@ def compute_road_quality_lookup(raw_rows, raw_cols, d1_rows, d1_cols):
 
     return lookup
 
+# ── Braking detection (API path) ──────────────────────────────────────────────
+
+def calculate_braking_intensity(prev_speed_kmh, curr_speed_kmh, time_diff_s):
+    """
+    Return deceleration rate (km/h/s), capped at BRAKING_INTENSITY_CAP_KMH_S.
+    Returns 0.0 when accelerating, holding speed, or time_diff is too small.
+    """
+    if time_diff_s is None or time_diff_s < MIN_SEGMENT_TIME_S:
+        return 0.0
+    delta = prev_speed_kmh - curr_speed_kmh  # positive = deceleration
+    if delta <= 0:
+        return 0.0
+    return round(min(delta / time_diff_s, BRAKING_INTENSITY_CAP_KMH_S), 2)
+
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
 def haversine(a, b):
@@ -259,8 +280,10 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
                      d1_rows, d1_cols, trip_id, db_trip_id, wheel_diam_mm):
     """
     One LineString per consecutive gnss point pair.
-    Speed = smoothed gnss.speed (already in km/h), capped at MAX_SPEED_KMH.
-    Road quality from decoded acc_y via timestamp lookup.
+    Speed   = smoothed gnss.speed (already in km/h), capped at MAX_SPEED_KMH.
+    Quality = from decoded acc_y via timestamp lookup.
+    Braking = detected from consecutive speed deltas using real timestamps.
+              GPS speed is pre-smoothed so hrot_diff guard is not needed.
     """
     if not gnss_rows:
         return []
@@ -281,18 +304,36 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
 
     quality_lookup = compute_road_quality_lookup(raw_rows, raw_cols, d1_rows, d1_cols)
 
-    features = []
+    features       = []
+    prev_speed_kmh = None  # rolling speed for braking detection
+
     for i in range(len(trimmed) - 1):
         a = trimmed[i]
         b = trimmed[i + 1]
 
         dist = haversine(a, b)
         if dist > MAX_GPS_JUMP_M or dist == 0:
+            # GPS jump — treat as discontinuity in the speed series
+            prev_speed_kmh = None
             continue
 
-        speed_kmh    = min((smoothed[i] + smoothed[i + 1]) / 2, MAX_SPEED_KMH)
-        time_diff_s  = (b["timestamp"] - a["timestamp"]).total_seconds() if a["timestamp"] and b["timestamp"] else 0
-        road_quality = quality_lookup(a["timestamp"]) if quality_lookup and a["timestamp"] else 0
+        speed_kmh   = min((smoothed[i] + smoothed[i + 1]) / 2, MAX_SPEED_KMH)
+        time_diff_s = (b["timestamp"] - a["timestamp"]).total_seconds() \
+                      if a["timestamp"] and b["timestamp"] else None
+        road_quality = quality_lookup(a["timestamp"]) \
+                       if quality_lookup and a["timestamp"] else 0
+
+        # Braking detection
+        braking_intensity = 0.0
+        if prev_speed_kmh is not None and time_diff_s is not None:
+            if abs(speed_kmh - prev_speed_kmh) > SPEED_JUMP_THRESHOLD_KMH:
+                # Implausible speed jump — reset series, don't flag as braking
+                prev_speed_kmh = speed_kmh
+                # Still append the segment, just with no braking flag
+            else:
+                braking_intensity = calculate_braking_intensity(
+                    prev_speed_kmh, speed_kmh, time_diff_s
+                )
 
         features.append({
             "type": "Feature",
@@ -312,13 +353,15 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
                 "road_quality":      road_quality,
                 "hrot_diff":         0,
                 "sample_diff":       0,
-                "time_diff_s":       round(time_diff_s, 3),
+                "time_diff_s":       round(time_diff_s, 3) if time_diff_s is not None else None,
                 "gps_distance_m":    round(dist, 1),
                 "wheel_diameter_mm": wheel_diam_mm,
-                "braking_intensity": 0,   
-                "is_braking":        False, 
+                "braking_intensity": braking_intensity,
+                "is_braking":        braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S,
             },
         })
+
+        prev_speed_kmh = speed_kmh
 
     return features
 
@@ -395,8 +438,11 @@ def load_remote_trips(existing_trip_ids):
                 d1_rows,   d1_cols,
                 trip_id, db_id, wheel_diam_mm
             )
+
+            braking_count = sum(1 for f in new_feats if f["properties"]["is_braking"])
             features.extend(new_feats)
-            print(f"  ✅ {trip_id}: {len(gnss_rows)} gnss pts → {len(new_feats)} segments")
+            print(f"  ✅ {trip_id}: {len(gnss_rows)} gnss pts → {len(new_feats)} segments"
+                  + (f" | 🛑 {braking_count} braking events" if braking_count else ""))
 
         except Exception as e:
             print(f"  ❌ {trip_id}: {e}")
@@ -429,6 +475,10 @@ def main():
     remote_ids = set(f['properties']['trip_id'] for f in remote_features)
     print(f"   Remote trips : {len(remote_ids)}")
     print(f"   Total segments: {len(all_features)} ({size_kb:.0f} KB)")
+
+    # Braking summary
+    total_braking = sum(1 for f in all_features if f['properties'].get('is_braking'))
+    print(f"   Total braking events: {total_braking}")
 
 if __name__ == "__main__":
     main()

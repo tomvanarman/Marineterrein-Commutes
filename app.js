@@ -53,6 +53,17 @@ function getSensorColor(tripId) {
   return sensorColorMap[sensor] || DEFAULT_COLOR;
 }
 
+// ─── First symbol layer (for correct z-ordering) ──────────────────────────────
+// Routes must be inserted BEFORE the basemap's first symbol/label layer so they
+// always render above map fill but below place-name text at any zoom level.
+function getFirstLabelLayerId() {
+  const layers = map.getStyle().layers;
+  for (const layer of layers) {
+    if (layer.type === 'symbol') return layer.id;
+  }
+  return undefined;
+}
+
 // ─── Colour expressions ───────────────────────────────────────────────────────
 function getSpeedColorExpression(mode) {
   const v = ['to-number', ['coalesce', ['get', 'Speed'], ['get', 'speed'], 0]];
@@ -98,8 +109,18 @@ function getCompositeLabel(s) {
   return 'Critical';
 }
 
-// ─── Data loading ─────────────────────────────────────────────────────────────
+// ─── Hotspot colour (count-driven) ───────────────────────────────────────────
+function getHotspotColorExpression() {
+  return [
+    'interpolate', ['linear'],
+    ['to-number', ['get', 'count']],
+    1, '#FFF176',
+    3, '#FF9800',
+    8, '#D32F2F',
+  ];
+}
 
+// ─── Data loading ─────────────────────────────────────────────────────────────
 async function loadMetadata() {
   const paths = [`${CONFIG.DATA_URL}trips_metadata.json`, './trips_metadata.json', 'trips_metadata.json'];
   for (const path of paths) {
@@ -152,7 +173,6 @@ async function loadAveragedSegments() {
 // ─── Stats helpers ────────────────────────────────────────────────────────────
 function getTripStats(tripId) {
   if (!tripsMetadata) return null;
-
   const variants = [
     tripId,
     tripId.replace(/_clean_processed$/i, ''),
@@ -163,7 +183,6 @@ function getTripStats(tripId) {
   ];
   const m = tripId.match(/^(.+_Trip\d+)/i);
   if (m) variants.push(m[1]);
-
   for (const v of variants) {
     if (tripsMetadata[v]) {
       const meta = tripsMetadata[v].metadata || tripsMetadata[v];
@@ -181,14 +200,6 @@ function getTripStats(tripId) {
     }
   }
   return null;
-}
-
-function parseDurationToSeconds(d) {
-  if (!d) return 0;
-  const parts = d.split(':').map(Number);
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0] || 0;
 }
 
 function formatDuration(s) {
@@ -227,7 +238,6 @@ function applyTripFilter(filterTripId) {
     } else {
       highlightColor = '#FF69B4';
     }
-
     map.setPaintProperty('trips-layer', 'line-color', [
       'case',
       ['==', ['get', 'trip_id'], filterTripId],
@@ -284,13 +294,11 @@ function resetSelection() {
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
 
-  // Uncheck all filter checkboxes
   ['speedColorsCheckbox','roadQualityCheckbox','averagedSegmentsCheckbox','brakingCheckbox'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.checked = false;
   });
 
-  // Hide all legends and mode groups
   document.getElementById('speedLegend').style.display            = 'none';
   document.getElementById('speedModeGroup').style.display         = 'none';
   document.getElementById('roadQualityLegend').style.display      = 'none';
@@ -299,7 +307,6 @@ function resetSelection() {
   const brakingLegend = document.getElementById('brakingLegend');
   if (brakingLegend) brakingLegend.style.display = 'none';
 
-  // Restore layers
   if (map.getLayer('averaged-segments'))
     map.setLayoutProperty('averaged-segments', 'visibility', 'none');
   if (map.getLayer('braking-hotspots-halo'))
@@ -314,13 +321,11 @@ function resetSelection() {
     map.setPaintProperty('trips-layer', 'line-width', 3);
   }
 
-  // Clear search input
   const searchInput = document.getElementById('tripSearchInput');
   const clearBtn    = document.getElementById('tripClearButton');
   if (searchInput) searchInput.value = '';
   if (clearBtn)    clearBtn.style.display = 'none';
 
-  // Restore stats panel
   document.getElementById('selectedTripRow').style.display  = 'none';
   document.getElementById('statTripRow').style.display      = 'flex';
   document.getElementById('statDistanceRow').style.display  = 'flex';
@@ -365,7 +370,6 @@ function showSelection(tripId) {
 
 function searchAndHighlightTrip(term) {
   if (!term) { resetSelection(); return; }
-
   const q       = term.toLowerCase().trim();
   const matches = tripIds.filter(id => id.toLowerCase().includes(q));
 
@@ -420,7 +424,7 @@ function updateAveragedSegmentColors() {
   map.setPaintProperty('averaged-segments', 'circle-color', exprs[averagedSegmentMode]);
 }
 
-async function setupAveragedSegments() {
+async function setupAveragedSegments(labelLayerId) {
   const data = await loadAveragedSegments();
   if (!data) return;
 
@@ -442,7 +446,7 @@ async function setupAveragedSegments() {
       'circle-opacity':         0.6,
       'circle-pitch-alignment': 'map',
     }
-  });
+  }, labelLayerId);
 
   map.on('click', 'averaged-segments', (e) => {
     e.preventDefault();
@@ -469,14 +473,8 @@ async function setupAveragedSegments() {
 }
 
 // ─── Braking hotspot accumulation ────────────────────────────────────────────
-//
-// Instead of a separate pre-built file, we accumulate directly from the loaded
-// trip features. Braking events are snapped to a ~25m grid (0.0002° cells) and
-// counted. Each cell becomes one circle whose size and colour reflect how many
-// events occurred there across all trips.
-//
 function buildBrakingHotspots(features) {
-  const CELL_SIZE = 0.0002; // ~22m at Amsterdam latitude
+  const CELL_SIZE = 0.0002;
   const grid = new Map();
 
   for (const f of features) {
@@ -486,18 +484,14 @@ function buildBrakingHotspots(features) {
     const mid    = coords[Math.floor(coords.length / 2)] || coords[0];
     const [lng, lat] = mid;
 
-    // Snap to grid cell
     const cellLng = Math.round(lng / CELL_SIZE) * CELL_SIZE;
     const cellLat = Math.round(lat / CELL_SIZE) * CELL_SIZE;
     const key     = `${cellLng.toFixed(4)},${cellLat.toFixed(4)}`;
 
     if (!grid.has(key)) {
       grid.set(key, {
-        lng: cellLng,
-        lat: cellLat,
-        count: 0,
-        totalIntensity: 0,
-        maxIntensity: 0,
+        lng: cellLng, lat: cellLat,
+        count: 0, totalIntensity: 0, maxIntensity: 0,
         trips: new Set(),
       });
     }
@@ -520,27 +514,16 @@ function buildBrakingHotspots(features) {
     },
   }));
 
-  console.log(`🛑 Built ${hotspotFeatures.length} braking hotspot cells from ${[...grid.values()].reduce((s, c) => s + c.count, 0)} events`);
+  console.log(`🛑 Built ${hotspotFeatures.length} braking hotspot cells`);
   return { type: 'FeatureCollection', features: hotspotFeatures };
 }
 
-// Colour: yellow → orange → red driven by event count
-function getHotspotColorExpression() {
-  return [
-    'interpolate', ['linear'],
-    ['to-number', ['get', 'count']],
-    1, '#FFF176',
-    3, '#FF9800',
-    8, '#D32F2F',
-  ];
-}
-
-function setupBrakingLayer(geojson) {
+function setupBrakingLayer(geojson, labelLayerId) {
   const hotspotData = buildBrakingHotspots(geojson.features || []);
 
   map.addSource('braking-hotspots', { type: 'geojson', data: hotspotData });
 
-  // Outer glow — radius scales with both zoom and event count
+  // Outer glow
   map.addLayer({
     id: 'braking-hotspots-halo',
     type: 'circle',
@@ -558,7 +541,7 @@ function setupBrakingLayer(geojson) {
       'circle-opacity':         0.35,
       'circle-pitch-alignment': 'map',
     },
-  });
+  }, labelLayerId);
 
   // Solid dot
   map.addLayer({
@@ -579,18 +562,16 @@ function setupBrakingLayer(geojson) {
       'circle-stroke-color':    'rgba(0,0,0,0.5)',
       'circle-pitch-alignment': 'map',
     },
-  });
+  }, labelLayerId);
 
   map.on('click', 'braking-hotspots-dot', (e) => {
     e.preventDefault();
     if (e.originalEvent) e.originalEvent.stopPropagation();
     const p = e.features[0].properties;
-
     let severity = 'Low';
     if (p.avg_intensity >= 20) severity = 'Emergency';
     else if (p.avg_intensity >= 10) severity = 'Hard';
     else if (p.avg_intensity >= 5)  severity = 'Firm';
-
     new mapboxgl.Popup()
       .setLngLat(e.lngLat)
       .setHTML(`
@@ -651,6 +632,11 @@ map.on('load', async () => {
   console.log('✅ Map loaded');
   await loadMetadata();
 
+  // Resolve insertion point once style is ready — all data layers go before
+  // the first basemap symbol layer so routes stay visible at all zoom levels.
+  const labelLayerId = getFirstLabelLayerId();
+  console.log(`📌 Inserting layers before basemap layer: "${labelLayerId}"`);
+
   try {
     const geojson = await loadTripsGeoJSON();
 
@@ -663,6 +649,8 @@ map.on('load', async () => {
     buildSensorColorMap(tripIds);
 
     map.addSource('trips', { type: 'geojson', data: geojson, attribution: 'Bike sensor data' });
+
+    // Insert BEFORE first label layer — fixes routes disappearing under basemap at low zoom
     map.addLayer({
       id: 'trips-layer',
       type: 'line',
@@ -672,7 +660,7 @@ map.on('load', async () => {
         'line-width':   3,
         'line-opacity': 0.7,
       }
-    });
+    }, labelLayerId);
 
     map.on('click', 'trips-layer', async (e) => {
       e.preventDefault();
@@ -704,7 +692,7 @@ map.on('load', async () => {
       const duration   = stats ? stats.duration             : formatDuration(Math.round(geoTime));
 
       const qualityLabels = { 0:'Unknown', 1:'Perfect', 2:'Normal', 3:'Outdated', 4:'Bad', 5:'No road' };
-      const popupName = tripId.replace(/_/g, ' ').trim();
+      const popupName  = tripId.replace(/_/g, ' ').trim();
       const brakingLine = geoBraking > 0 ? `<br>🛑 Braking events: ${geoBraking}` : '';
 
       currentPopup = new mapboxgl.Popup()
@@ -731,8 +719,8 @@ map.on('load', async () => {
       }
     });
 
-    setupBrakingLayer(geojson);
-    await setupAveragedSegments();
+    setupBrakingLayer(geojson, labelLayerId);
+    await setupAveragedSegments(labelLayerId);
 
     setupControls();
     updateStatsFromMetadata();
@@ -743,7 +731,7 @@ map.on('load', async () => {
     console.error('❌ Error loading trips:', err);
   }
 
-  // Marineterrein boundary
+  // Marineterrein boundary — also before labels
   const boundary = [
     [4.914554,52.375853],[4.913224,52.374972],[4.914403,52.373225],
     [4.915884,52.373577],[4.916600,52.373163],[4.915520,52.372566],
@@ -752,7 +740,11 @@ map.on('load', async () => {
     [4.914554,52.375853]
   ];
   map.addSource('marineterrein-outline', { type:'geojson', data:{ type:'Feature', geometry:{ type:'LineString', coordinates: boundary } } });
-  map.addLayer({ id:'marineterrein-outline-layer', type:'line', source:'marineterrein-outline', layout:{ 'line-join':'round','line-cap':'round' }, paint:{ 'line-color':'#ffffff','line-width':2,'line-dasharray':[3,2],'line-opacity':0.8 } });
+  map.addLayer({
+    id: 'marineterrein-outline-layer', type: 'line', source: 'marineterrein-outline',
+    layout: { 'line-join':'round', 'line-cap':'round' },
+    paint: { 'line-color':'#ffffff', 'line-width':2, 'line-dasharray':[3,2], 'line-opacity':0.8 }
+  }, labelLayerId);
 });
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
@@ -878,7 +870,6 @@ function setupControls() {
   const resetBtn = document.getElementById('resetButton');
   if (resetBtn) resetBtn.addEventListener('click', resetSelection);
 
-  // Search
   const searchInput   = document.getElementById('tripSearchInput');
   const searchButton  = document.getElementById('tripSearchButton');
   const suggestionBox = document.getElementById('searchSuggestions');
@@ -920,7 +911,6 @@ function setupControls() {
     searchInput.addEventListener('blur',   () => setTimeout(hideSuggestions, 150));
   }
 
-  // Speed colours
   const speedCb = document.getElementById('speedColorsCheckbox');
   if (speedCb) {
     speedCb.addEventListener('change', e => {
@@ -946,7 +936,6 @@ function setupControls() {
     });
   }
 
-  // Road quality
   const qualityCb = document.getElementById('roadQualityCheckbox');
   if (qualityCb) {
     qualityCb.addEventListener('change', e => {

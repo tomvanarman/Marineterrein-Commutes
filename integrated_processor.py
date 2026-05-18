@@ -15,7 +15,7 @@ OUTPUT_ROOT = "processed_sensor_data"
 
 # Braking detection: flag a segment when deceleration exceeds this threshold.
 # Units: km/h lost per second. 5 = firm intentional braking; lower = more sensitive.
-BRAKING_DECEL_THRESHOLD_KMH_S = 25
+BRAKING_DECEL_THRESHOLD_KMH_S = 40
 
 # Braking sanity caps
 # Hard ceiling on deceleration rate — anything above this is a data artefact.
