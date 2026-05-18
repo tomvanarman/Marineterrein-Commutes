@@ -1,3 +1,4 @@
+cat > /mnt/user-data/outputs/app.js << 'ENDOFFILE'
 // app.js
 // Bike Sensor Data Visualization
 // Loads live GeoJSON from Supabase Edge Function — no PMTiles download needed.
@@ -31,6 +32,7 @@ let averagedSegmentMode = 'composite';
 let searchActive = false;
 let activeFilter = null;
 let showBraking = false;
+let brakingColorMode = 'concentration'; // 'concentration' | 'severity'
 
 // ─── Sensor colours ───────────────────────────────────────────────────────────
 const SENSOR_COLORS = [
@@ -53,9 +55,7 @@ function getSensorColor(tripId) {
   return sensorColorMap[sensor] || DEFAULT_COLOR;
 }
 
-// ─── First symbol layer (for correct z-ordering) ──────────────────────────────
-// Routes must be inserted BEFORE the basemap's first symbol/label layer so they
-// always render above map fill but below place-name text at any zoom level.
+// ─── First symbol layer ───────────────────────────────────────────────────────
 function getFirstLabelLayerId() {
   const layers = map.getStyle().layers;
   for (const layer of layers) {
@@ -109,15 +109,47 @@ function getCompositeLabel(s) {
   return 'Critical';
 }
 
-// ─── Hotspot colour (count-driven) ───────────────────────────────────────────
-function getHotspotColorExpression() {
+// ─── Hotspot colour expressions ───────────────────────────────────────────────
+
+// Concentration mode: colour driven by event count
+function getHotspotConcentrationColorExpression() {
   return [
     'interpolate', ['linear'],
     ['to-number', ['get', 'count']],
-    1, '#FFF176',
-    3, '#FF9800',
-    8, '#D32F2F',
+    1,  '#FFF176',
+    3,  '#FF9800',
+    8,  '#D32F2F',
+    20, '#9C27B0',
   ];
+}
+
+// Severity mode: colour driven by avg_intensity (log-scaled to handle GPS ~3 vs CSV ~50)
+// Uses a composite that normalises both GPS and CSV ranges onto the same palette.
+function getHotspotSeverityColorExpression() {
+  return [
+    'interpolate', ['linear'],
+    ['to-number', ['get', 'avg_intensity']],
+    0,   '#FFF176',   // minimal decel
+    2,   '#FFB300',   // GPS moderate (traffic lights)
+    5,   '#FF5722',   // GPS hard / CSV light
+    15,  '#D32F2F',   // CSV firm braking
+    35,  '#9C27B0',   // CSV emergency
+  ];
+}
+
+function getHotspotColorExpression() {
+  return brakingColorMode === 'severity'
+    ? getHotspotSeverityColorExpression()
+    : getHotspotConcentrationColorExpression();
+}
+
+// ─── Update braking layer colours when mode toggles ──────────────────────────
+function refreshBrakingColors() {
+  if (!map.getLayer('braking-hotspots-halo')) return;
+  const expr = getHotspotColorExpression();
+  map.setPaintProperty('braking-hotspots-halo', 'circle-color', expr);
+  map.setPaintProperty('braking-hotspots-dot',  'circle-color', expr);
+  updateBrakingLegend();
 }
 
 // ─── Data loading ─────────────────────────────────────────────────────────────
@@ -306,6 +338,8 @@ function resetSelection() {
   document.getElementById('averagedModeGroup').style.display      = 'none';
   const brakingLegend = document.getElementById('brakingLegend');
   if (brakingLegend) brakingLegend.style.display = 'none';
+  const brakingModeGroup = document.getElementById('brakingModeGroup');
+  if (brakingModeGroup) brakingModeGroup.style.display = 'none';
 
   if (map.getLayer('averaged-segments'))
     map.setLayoutProperty('averaged-segments', 'visibility', 'none');
@@ -543,7 +577,7 @@ function setupBrakingLayer(geojson, labelLayerId) {
     },
   }, labelLayerId);
 
-  // Solid dot
+  // Solid dot — no stroke
   map.addLayer({
     id: 'braking-hotspots-dot',
     type: 'circle',
@@ -558,8 +592,6 @@ function setupBrakingLayer(geojson, labelLayerId) {
         17, ['interpolate', ['linear'], ['get', 'count'],  1, 11,  5, 18, 15, 28],
       ],
       'circle-opacity':         0.85,
-      'circle-stroke-width':    1.5,
-      'circle-stroke-color':    'rgba(0,0,0,0.5)',
       'circle-pitch-alignment': 'map',
     },
   }, labelLayerId);
@@ -569,9 +601,9 @@ function setupBrakingLayer(geojson, labelLayerId) {
     if (e.originalEvent) e.originalEvent.stopPropagation();
     const p = e.features[0].properties;
     let severity = 'Low';
-    if (p.avg_intensity >= 20) severity = 'Emergency';
-    else if (p.avg_intensity >= 10) severity = 'Hard';
-    else if (p.avg_intensity >= 5)  severity = 'Firm';
+    if (p.avg_intensity >= 15) severity = 'Emergency';
+    else if (p.avg_intensity >= 5)  severity = 'Hard';
+    else if (p.avg_intensity >= 2.5) severity = 'Firm';
     new mapboxgl.Popup()
       .setLngLat(e.lngLat)
       .setHTML(`
@@ -589,6 +621,35 @@ function setupBrakingLayer(geojson, labelLayerId) {
   map.on('mouseleave', 'braking-hotspots-dot', () => { map.getCanvas().style.cursor = ''; });
 
   console.log('✅ Braking hotspot layer added');
+}
+
+// ─── Braking legend ───────────────────────────────────────────────────────────
+function updateBrakingLegend() {
+  const legend = document.getElementById('brakingLegend');
+  if (!legend) return;
+
+  if (brakingColorMode === 'severity') {
+    legend.innerHTML = `
+      <strong>🔴 SUDDEN BRAKING</strong>
+      <div class="legend-subtitle">Colour = avg deceleration</div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FFF176"></div><span>Minimal (&lt;2 km/h/s)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FFB300"></div><span>Moderate (2–5)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FF5722"></div><span>Hard (5–15)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#D32F2F"></div><span>Firm (15–35)</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#9C27B0"></div><span>Emergency (&gt;35)</span></div>
+      <div class="legend-note">Circle size = number of events</div>
+    `;
+  } else {
+    legend.innerHTML = `
+      <strong>🔴 SUDDEN BRAKING</strong>
+      <div class="legend-subtitle">Colour = event concentration</div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FFF176"></div><span>1–2 events</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#FF9800"></div><span>3–7 events</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#D32F2F"></div><span>8–19 events</span></div>
+      <div class="speed-legend-item"><div class="speed-color-box" style="background:#9C27B0"></div><span>20+ events</span></div>
+      <div class="legend-note">Circle size = number of events</div>
+    `;
+  }
 }
 
 // ─── Isochrone ────────────────────────────────────────────────────────────────
@@ -632,8 +693,6 @@ map.on('load', async () => {
   console.log('✅ Map loaded');
   await loadMetadata();
 
-  // Resolve insertion point once style is ready — all data layers go before
-  // the first basemap symbol layer so routes stay visible at all zoom levels.
   const labelLayerId = getFirstLabelLayerId();
   console.log(`📌 Inserting layers before basemap layer: "${labelLayerId}"`);
 
@@ -648,9 +707,14 @@ map.on('load', async () => {
 
     buildSensorColorMap(tripIds);
 
-    map.addSource('trips', { type: 'geojson', data: geojson, attribution: 'Bike sensor data', buffer: 512, tolerance: 0.1 });
+    map.addSource('trips', {
+      type: 'geojson',
+      data: geojson,
+      attribution: 'Bike sensor data',
+      buffer: 512,
+      tolerance: 0.1,
+    });
 
-    // Insert BEFORE first label layer — fixes routes disappearing under basemap at low zoom
     map.addLayer({
       id: 'trips-layer',
       type: 'line',
@@ -667,6 +731,9 @@ map.on('load', async () => {
     }, labelLayerId);
 
     map.on('click', 'trips-layer', async (e) => {
+      // Don't allow trip selection while braking layer is active
+      if (showBraking) return;
+
       e.preventDefault();
       if (e.originalEvent) e.originalEvent.stopPropagation();
       if (currentPopup) { currentPopup.remove(); }
@@ -735,7 +802,7 @@ map.on('load', async () => {
     console.error('❌ Error loading trips:', err);
   }
 
-  // Marineterrein boundary — also before labels
+  // Marineterrein boundary
   const boundary = [
     [4.914554,52.375853],[4.913224,52.374972],[4.914403,52.373225],
     [4.915884,52.373577],[4.916600,52.373163],[4.915520,52.372566],
@@ -821,17 +888,32 @@ function setupBrakingControls() {
 
   cb.addEventListener('change', e => {
     showBraking = e.target.checked;
-    const legend     = document.getElementById('brakingLegend');
-    const visibility = showBraking ? 'visible' : 'none';
+    const legend         = document.getElementById('brakingLegend');
+    const brakingModeGroup = document.getElementById('brakingModeGroup');
+    const visibility     = showBraking ? 'visible' : 'none';
 
     if (map.getLayer('braking-hotspots-halo')) map.setLayoutProperty('braking-hotspots-halo', 'visibility', visibility);
     if (map.getLayer('braking-hotspots-dot'))  map.setLayoutProperty('braking-hotspots-dot',  'visibility', visibility);
 
-    if (legend) legend.style.display = showBraking ? 'block' : 'none';
+    if (legend) {
+      legend.style.display = showBraking ? 'block' : 'none';
+      if (showBraking) updateBrakingLegend();
+    }
+    if (brakingModeGroup) brakingModeGroup.style.display = showBraking ? 'flex' : 'none';
 
     updateResetButtonVisibility();
     setTimeout(updateLegendPositions, 50);
     updateStatsVisibility();
+  });
+
+  // Colour mode toggle — concentration vs severity
+  document.querySelectorAll('input[name="brakingMode"]').forEach(r => {
+    r.addEventListener('change', e => {
+      brakingColorMode = e.target.value;
+      if (showBraking) {
+        refreshBrakingColors();
+      }
+    });
   });
 }
 
@@ -1034,3 +1116,4 @@ function renderSensorLegend() {
 }
 
 window.searchTrip = searchAndHighlightTrip;
+ENDOFFILE
