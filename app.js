@@ -648,13 +648,17 @@ map.on('load', async () => {
 
     buildSensorColorMap(tripIds);
 
-    map.addSource('trips', { type: 'geojson', data: geojson, attribution: 'Bike sensor data' });
+    map.addSource('trips', { type: 'geojson', data: geojson, attribution: 'Bike sensor data', buffer: 512, tolerance: 0.1 });
 
     // Insert BEFORE first label layer — fixes routes disappearing under basemap at low zoom
     map.addLayer({
       id: 'trips-layer',
       type: 'line',
       source: 'trips',
+      layout: {
+        'line-cap':  'round',
+        'line-join': 'round',
+      },
       paint: {
         'line-color':   getSensorColorExpression(),
         'line-width':   3,
