@@ -598,7 +598,6 @@ function setupBrakingLayer(geojson, labelLayerId) {
         📍 Events here: <strong>${p.count}</strong><br>
         ⚡ Avg deceleration: ${p.avg_intensity} km/h/s<br>
         🏎️ Peak deceleration: ${p.max_intensity} km/h/s<br>
-        🏷️ Severity: ${severity}<br>
         🚲 Across ${p.trip_count} trip(s)
       `)
       .addTo(map);
