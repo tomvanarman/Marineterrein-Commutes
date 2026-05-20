@@ -52,9 +52,8 @@ SPEED_SMOOTH_WIN   = 5      # rolling average window for gnss speed
 BRAKING_DECEL_THRESHOLD_KMH_S = 40   # km/h per second; only flag genuine hard braking
 BRAKING_INTENSITY_CAP_KMH_S   = 50   # hard ceiling to suppress data artefacts
 
-# Braking detection — API/GNSS trips (raw unsmoothed speed, literature threshold)
-# 3.4 m/s² = 12.24 km/h/s per: abrupt deceleration threshold in cycling research
-BRAKING_DECEL_THRESHOLD_GPS_KMH_S = 12.0
+# Braking detection — API/GNSS trips (speed pre-smoothed, lower peak decels)
+BRAKING_DECEL_THRESHOLD_GPS_KMH_S = 2.0  # tune up to 2.5 to reduce false positives
 
 SPEED_JUMP_THRESHOLD_KMH      = 20   # implausible inter-segment speed change → reset
 MIN_SEGMENT_TIME_S             = 0.5  # GPS fixes are ~1 s apart; below this is noise
@@ -309,8 +308,8 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
 
     quality_lookup = compute_road_quality_lookup(raw_rows, raw_cols, d1_rows, d1_cols)
 
-    features            = []
-    prev_raw_speed_kmh  = None  # unsmoothed speed, used only for braking detection
+    features       = []
+    prev_speed_kmh = None  # rolling speed for braking detection
 
     for i in range(len(trimmed) - 1):
         a = trimmed[i]
@@ -319,31 +318,25 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
         dist = haversine(a, b)
         if dist > MAX_GPS_JUMP_M or dist == 0:
             # GPS jump — treat as discontinuity in the speed series
-            prev_raw_speed_kmh = None
+            prev_speed_kmh = None
             continue
 
-        # Display speed: smoothed to reduce GPS noise on the map
         speed_kmh   = min((smoothed[i] + smoothed[i + 1]) / 2, MAX_SPEED_KMH)
-
-        # Raw speed: unsmoothed, used for braking detection so real
-        # deceleration peaks aren't flattened by the rolling average
-        raw_speed_kmh = min(float(trimmed[i]["speed"] or 0), MAX_SPEED_KMH)
-
         time_diff_s = (b["timestamp"] - a["timestamp"]).total_seconds() \
                       if a["timestamp"] and b["timestamp"] else None
         road_quality = quality_lookup(a["timestamp"]) \
                        if quality_lookup and a["timestamp"] else 0
 
-        # Braking detection on raw (unsmoothed) speed so genuine hard stops
-        # register close to the ~12 km/h/s literature threshold (3.4 m/s²)
+        # Braking detection — use GPS-appropriate threshold (smoothed speed
+        # caps real decels at ~3 km/h/s, far below the CSV threshold of 40)
         braking_intensity = 0.0
-        if prev_raw_speed_kmh is not None and time_diff_s is not None:
-            if abs(raw_speed_kmh - prev_raw_speed_kmh) > SPEED_JUMP_THRESHOLD_KMH:
-                # Implausible jump — reset, don't flag as braking
-                prev_raw_speed_kmh = raw_speed_kmh
+        if prev_speed_kmh is not None and time_diff_s is not None:
+            if abs(speed_kmh - prev_speed_kmh) > SPEED_JUMP_THRESHOLD_KMH:
+                # Implausible speed jump — reset series, don't flag as braking
+                prev_speed_kmh = speed_kmh
             else:
                 braking_intensity = calculate_braking_intensity(
-                    prev_raw_speed_kmh, raw_speed_kmh, time_diff_s
+                    prev_speed_kmh, speed_kmh, time_diff_s
                 )
 
         features.append({
@@ -372,7 +365,7 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
             },
         })
 
-        prev_raw_speed_kmh = raw_speed_kmh
+        prev_speed_kmh = speed_kmh
 
     return features
 

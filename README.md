@@ -8,19 +8,21 @@ This project ingests raw sensor data — either from local CSV files or directly
 
 - **Speed-colored route visualizations** showing cycling speeds across trips
 - **Road quality mapping** to identify infrastructure conditions
-- **Sudden braking detection** flagging deceleration events above 3.4 m/s² (≈12 km/h/s)
-- **Braking hotspots** accumulating repeated braking events across trips into location-based clusters, built at runtime from `trips.geojson`
+- **Sudden braking detection** flagging deceleration events above 5 km/h/s
+- **Braking hotspots** accumulating repeated braking events across trips into location-based clusters
 - **Single-file rendering** via `trips.geojson` — generated locally, committed to the repo, served statically
 
 ## How data gets to the map
 
 ```
 Local CSV files ──► pipeline ──► processed_sensor_data/ ──┐
-                                                            ├──► generate_trips_geojson.py ──► trips.geojson ──► map
-Supabase DB ────────────────────────────────────────────┘
+                                                            ├──► generate_trips_geojson.py ──► trips.geojson ──┐
+Supabase DB ────────────────────────────────────────────┘                                                      │
+                                                                                                                ├──► map
+                                                            generate_braking_hotspots.py ──► braking_hotspots.json ──┘
 ```
 
-`generate_trips_geojson.py` merges both sources into one file. Local processed trips always take priority — they have real wheel-rotation speed and road quality data. Supabase trips fill in anything not already covered locally. Both sources support braking detection; the method differs (see Data Quality Notes).
+`generate_trips_geojson.py` merges both sources into one file. Local processed trips always take priority — they have real wheel-rotation speed, road quality, and braking data. Supabase trips fill in anything not already covered locally (GPS speed only, no braking).
 
 ## Features
 
@@ -40,11 +42,10 @@ Supabase DB ──────────────────────�
 - Color-coded segments: Perfect → Normal → Outdated → Bad → No Road
 
 ### **Sudden Braking**
-- Flags segments where deceleration exceeded **3.4 m/s² (≈12 km/h/s)** — the threshold defined in cycling research for abrupt braking
-- Local CSV trips use wheel-rotation speed deltas for high-precision detection
-- Supabase/API trips use raw (unsmoothed) GPS speed deltas
-- **Accumulation hotspots**: circles sized by event count, coloured by concentration — useful for identifying dangerous intersections or road features
-- Selecting a trip while the braking layer is active filters hotspots to that trip only; clicking off restores the full view
+- Flags segments where deceleration exceeded 5 km/h per second
+- Individual events colored by intensity: Gentle → Hard → Emergency
+- **Accumulation hotspots**: larger circles where braking recurs across multiple trips, sized by event count — useful for identifying dangerous intersections or road features
+- Click any event or hotspot for deceleration, severity, speed, and trip details
 
 ### **Trip Statistics**
 - Total trips, distance, and riding time
@@ -61,6 +62,7 @@ Reflector-Ride-Maps/
 ├── processed_sensor_data/          # Speed + road quality + braking GeoJSON (generated)
 ├── trips_metadata.json             # Trip statistics (generated, commit this)
 ├── trips.geojson                   # Map data (generated, commit this)
+├── braking_hotspots.json           # Braking hotspot clusters (generated, commit this)
 │
 ├── master_pipeline.py              # Fetch + process new trips end-to-end
 ├── csv_to_geojson_converter.py     # Step 1: Convert CSVs / fetch from Supabase
@@ -68,6 +70,7 @@ Reflector-Ride-Maps/
 ├── road_averaging.py               # Step 3: Average road segments
 ├── road_quality_calculator.py      # Road quality scoring module
 ├── generate_trips_geojson.py       # Merge local + Supabase into trips.geojson
+├── generate_braking_hotspots.py    # Aggregate braking events into hotspot clusters
 │
 ├── index.html                      # Main visualization page
 ├── app.js                          # Map logic and interactions
@@ -108,16 +111,16 @@ Fetches new trips from Supabase, calculates speeds, road quality, and braking ev
 
 **Step 2 — Commit and push:**
 ```bash
-git add trips.geojson trips_metadata.json road_segments_averaged.json
+git add trips.geojson trips_metadata.json road_segments_averaged.json braking_hotspots.json
 git commit -m "Update trip data"
 git push
 ```
 
-The map updates automatically.
+The map at `https://tomvanarman.github.io/Reflector-Ride-Maps/` updates automatically.
 
 ## Detailed Workflow
 
-### master_pipeline.py (Steps 1–5)
+### master_pipeline.py (Steps 1–6)
 
 ```bash
 python master_pipeline.py --api   # fetch from Supabase + process
@@ -130,11 +133,13 @@ Runs the full processing pipeline:
 
 **Step 2 — Calculate speeds and braking:**
 - Local CSV trips: wheel rotation (HRot) speed + real road quality from accelerometer + braking detection from speed deltas
-- API trips: GPS speed (raw for braking detection, smoothed for display), road quality from accelerometer, braking detected from unsmoothed GPS speed deltas
+- API trips: GPS speed directly, road quality from accelerometer, no braking detection (wheel data unavailable)
 
 **Step 3 — Average road segments:** Aggregates overlapping segments into per-road scores. Output: `road_segments_averaged.json`.
 
 **Step 4 — Generate trips.geojson:** Merges local processed files with any remaining Supabase trips into `trips.geojson`.
+
+**Step 5 — Generate braking hotspots:** Reads `trips.geojson` and writes `braking_hotspots.json`.
 
 Each trip in `trips_metadata.json` is tagged `"source": "api"` or `"source": "local_csv"`.
 
@@ -145,17 +150,31 @@ python generate_trips_geojson.py
 ```
 
 Builds `trips.geojson` by:
-1. Loading all `*_processed.geojson` files from `processed_sensor_data/` (best data — includes high-precision braking)
+1. Loading all `*_processed.geojson` files from `processed_sensor_data/` (best data — includes braking)
 2. Fetching any remaining trips from Supabase not already covered locally
 3. Merging into one file and writing `trips.geojson`
 
-Braking hotspots are computed at runtime in the browser from `trips.geojson` — no separate hotspot file needed.
-
 Trips that time out during reconstruction (>30s) are skipped and listed at the end. Increase `STATEMENT_TIMEOUT` in the script if needed.
+
+### generate_braking_hotspots.py
+
+```bash
+python generate_braking_hotspots.py
+```
+
+Reads `trips.geojson` and clusters braking events into ~35 m grid cells. Each output point in `braking_hotspots.json` carries:
+- `count` — number of braking events at this location
+- `avg_intensity` / `max_intensity` — deceleration in km/h/s
+- `trip_count` — how many distinct trips braked here
+- `severity` — Gentle / Firm / Hard / Emergency
+
+Only local CSV trips contribute braking data. Grid cell size is controlled by `CELL_DEG` in the script (default `0.0003` ≈ 35 m at Amsterdam latitude).
 
 ## Web Visualization
 
-The map loads `trips.geojson` statically — fast, simple, no backend needed at runtime. Braking hotspots are built in the browser by clustering `is_braking` segments from `trips.geojson` into a grid.
+Visit: **https://tomvanarman.github.io/Reflector-Ride-Maps/**
+
+The map loads `trips.geojson` and `braking_hotspots.json` statically — fast, simple, no backend needed at runtime.
 
 ### Controls
 
@@ -168,7 +187,7 @@ The map loads `trips.geojson` statically — fast, simple, no backend needed at 
 - **Speed**: Gradient or category color mode
 - **Road Quality**: Infrastructure condition coloring
 - **Averaged Road Segments**: Aggregated multi-trip view with composite score
-- **Sudden Braking**: Hotspot clusters sized and coloured by event concentration. Selecting a trip filters hotspots to that trip only.
+- **Sudden Braking**: Individual deceleration events; enable sub-toggle for accumulation hotspots
 
 ### Speed Legend
 
@@ -188,13 +207,12 @@ The map loads `trips.geojson` statically — fast, simple, no backend needed at 
 - 🟠 Orange: Bad (4)
 - 🔴 Red: No Road (5)
 
-### Braking Hotspot Legend
+### Braking Legend
 
-- 🟡 Yellow: 1–2 events
-- 🟠 Orange: 3–7 events
-- 🔴 Red: 8–19 events
-- 🟣 Purple: 20+ events
-- Circle size proportional to event count
+- 🟡 Yellow: Gentle (5–10 km/h/s)
+- 🟠 Orange: Hard (10–20 km/h/s)
+- 🔴 Red: Emergency (20+ km/h/s)
+- Circle size (hotspot mode): proportional to number of events at that location
 
 ## Configuration
 
@@ -206,11 +224,16 @@ MAP_ZOOM: 13,
 MAP_STYLE: '...'                // CartoDB Dark Matter
 ```
 
-### Braking threshold (`integrated_processor.py` and `generate_trips_geojson.py`)
+### Braking threshold (`integrated_processor.py`)
 
 ```python
-BRAKING_DECEL_THRESHOLD_KMH_S     = 40.0   # CSV/wheel-rotation trips (high precision)
-BRAKING_DECEL_THRESHOLD_GPS_KMH_S = 12.0   # API/GPS trips (≈ 3.4 m/s², literature threshold)
+BRAKING_DECEL_THRESHOLD_KMH_S = 5.0  # km/h lost per second; lower = more sensitive
+```
+
+### Hotspot grid size (`generate_braking_hotspots.py`)
+
+```python
+CELL_DEG = 0.0003  # ~35 m cells at Amsterdam latitude; increase for coarser clusters
 ```
 
 ### Wheel settings (`integrated_processor.py`)
@@ -223,19 +246,22 @@ DEFAULT_WHEEL_DIAMETER_MM = 711  # fallback if not in trip metadata
 
 | Source | Speed | Road Quality | Braking |
 |--------|-------|--------------|---------|
-| Local CSV (via pipeline) | Wheel rotation — accurate | Real — from accelerometer | ✅ High precision — wheel speed deltas |
-| Supabase API | GPS — approximate | Real — from accelerometer | ✅ Detected from raw GPS speed deltas |
+| Local CSV (via pipeline) | Wheel rotation — accurate | Real — from accelerometer | ✅ Detected from speed deltas |
+| Supabase API | GPS — approximate | Real — from accelerometer | ❌ Not available (no wheel data) |
 
-Local processed trips always take priority in `trips.geojson`. Note that GPS-based braking detection is less precise than wheel-rotation detection — genuine hard stops may occasionally be missed if GPS sampling rate is low.
+Local processed trips always take priority in `trips.geojson`.
 
 ## Troubleshooting
 
 ### "Braking hotspots show 0 events"
-- Hotspots are built at runtime from `is_braking` flags in `trips.geojson`. Confirm these are present:
+- Your processed files may be stale. Delete them and rerun:
   ```bash
-  python -c "import json; d=json.load(open('trips.geojson')); print(sum(1 for f in d['features'] if f['properties'].get('is_braking')))"
+  find processed_sensor_data -name "*_processed.geojson" -delete
+  python integrated_processor.py
+  python generate_trips_geojson.py
+  python generate_braking_hotspots.py
   ```
-- If the count is 0, regenerate: `python generate_trips_geojson.py`
+- Confirm braking data is present: `is_braking` and `braking_intensity` should appear in processed file properties.
 
 ### "Map is blank"
 - Check that `trips.geojson` exists in the repo root and has been pushed
@@ -243,7 +269,7 @@ Local processed trips always take priority in `trips.geojson`. Note that GPS-bas
 
 ### "Speed shows 0 or capped at 40 for some trips"
 - These are API-sourced trips where GPS speed was null or low
-- Run the full pipeline to get wheel-rotation speed for those trips if CSVs are available
+- Run the full pipeline to get wheel-rotation speed for those trips
 
 ### "Trip skipped due to timeout"
 - The reconstruction query for that trip takes >30s
