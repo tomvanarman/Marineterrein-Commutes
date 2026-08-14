@@ -668,8 +668,6 @@ map.on('load', async () => {
       type: 'geojson',
       data: geojson,
       attribution: 'Bike sensor data',
-      buffer: 512,
-      tolerance: 0.1,
     });
 
     map.addLayer({
