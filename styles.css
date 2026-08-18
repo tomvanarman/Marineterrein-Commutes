@@ -867,18 +867,30 @@ input[type="range"] {
 @media (max-width: 900px) {
 
   /* Controls panel: collapsed off-screen by default,
-     slides in when .open is toggled by the tab button */
+     slides in when .open is toggled by the tab button.
+     FIX: previously used `min-width: 260px` with content-box sizing
+     and `left: -280px`. min-width is a floor, not a cap, and with
+     the base rule's 15px padding + 1px border added on top (default
+     box-sizing: content-box), the panel's real width was at least
+     260 + 30 + 2 = 292px — 12px wider than the -280px offscreen
+     offset, so a sliver of it always poked into view on the left
+     edge. Fixed width (not min-width) + box-sizing: border-box makes
+     the panel's width predictable, and an offset past that width
+     (plus room for the box-shadow's blur) keeps the whole panel
+     fully off-screen while closed — same fix as the Tallinn dashboard. */
   #controls {
     position: fixed;
     top: 0;
-    left: -280px;
+    left: -300px;
+    width: 280px;
+    box-sizing: border-box;
     height: 100%;
     max-height: 100%;
-    min-width: 260px;
     border-radius: 0;
     z-index: 100;
     transition: left 0.3s ease;
     overflow-y: auto;
+    overflow-x: hidden;
   }
   #controls.open {
     left: 0;
