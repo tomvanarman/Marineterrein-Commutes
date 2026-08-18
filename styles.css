@@ -842,7 +842,7 @@ input[type="range"] {
   white-space: nowrap;
 }
 #controlsTab.open {
-  left: 264px;
+  left: 224px;
 }
 #controlsTab:hover {
   background: rgba(52, 204, 204, 0.12);
