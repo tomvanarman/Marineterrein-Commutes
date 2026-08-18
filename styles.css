@@ -819,7 +819,9 @@ input[type="range"] {
 #controlsTab {
   display: none; /* hidden on desktop; shown via media query below */
   position: fixed;
-  top: 14px;
+  top: 6px; /* was 14px â€” with the button's own padding/border it was
+               ~34px tall, putting its bottom edge right against the
+               "BIKE ROUTES" title underline below it */
   left: 10px;
   transform: none;
   z-index: 9999;
@@ -842,7 +844,10 @@ input[type="range"] {
   white-space: nowrap;
 }
 #controlsTab.open {
-  left: 224px;
+  left: 224px; /* panel is 280px wide with 15px padding (same padding
+                  that insets Filter Trips and the checkboxes), and
+                  the tab itself is ~41px wide, so 280 - 15 - 41 = 224
+                  lines its right edge up with that same 15px margin. */
 }
 #controlsTab:hover {
   background: rgba(52, 204, 204, 0.12);
