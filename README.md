@@ -118,6 +118,31 @@ git push
 
 The map at `https://tomvanarman.github.io/Reflector-Ride-Maps/` updates automatically.
 
+## Automating with GitHub Actions
+
+`.github/workflows/generate-trips.yml` runs on a 6-hour cron (and via
+manual `workflow_dispatch`). It does **not** run the full pipeline —
+it only covers the Supabase side:
+
+1. `generate_trips_geojson.py` — merges already-committed local
+   processed trips with any new Supabase trips
+2. `road_averaging.py` — regenerates `road_segments_averaged.json`
+3. `generate_braking_hotspots.py` — regenerates `braking_hotspots.json`
+   from the updated `trips.geojson`
+4. Commits and pushes all three files if anything changed
+
+**What it doesn't do:** process local CSVs. `csv_to_geojson_converter.py`
+and `integrated_processor.py` (the steps that turn raw CSVs into
+`processed_sensor_data/*_processed.geojson` with real braking data)
+only run when you invoke `master_pipeline.py` locally. So new Supabase
+rides appear on the map automatically every 6 hours; new *local CSV*
+rides — and any new braking events tied to them — still need a manual
+`master_pipeline.py --api` run and push. `trips_metadata.json` is also
+untouched by the Action — it's only written by the local pipeline.
+
+Required repo secrets: `SUPABASE_HOST`, `SUPABASE_PORT`, `SUPABASE_DB`,
+`SUPABASE_USER`, `SUPABASE_PASSWORD`.
+
 ## Detailed Workflow
 
 ### master_pipeline.py (Steps 1–6)
