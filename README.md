@@ -1,4 +1,4 @@
-# 🚴 Reflector Ride Maps
+# Reflector Ride Maps
 
 A bike sensor data visualization tool that transforms GPS and accelerometer data into interactive route maps with speed coloring, road quality analysis, and braking event detection.
 
@@ -201,17 +201,17 @@ The map loads `trips.geojson` and `braking_hotspots.json` statically — fast, s
 
 ### Road Quality Legend
 
-- 🟢 Green: Perfect (1)
-- 🟢 Light Green: Normal (2)
-- 🟡 Yellow: Outdated (3)
-- 🟠 Orange: Bad (4)
-- 🔴 Red: No Road (5)
+- Green: Perfect (1)
+- Light Green: Normal (2)
+- Yellow: Outdated (3)
+- Orange: Bad (4)
+- Red: No Road (5)
 
 ### Braking Legend
 
-- 🟡 Yellow: Gentle (5–10 km/h/s)
-- 🟠 Orange: Hard (10–20 km/h/s)
-- 🔴 Red: Emergency (20+ km/h/s)
+- Yellow: Gentle (5–10 km/h/s)
+- Orange: Hard (10–20 km/h/s)
+- Red: Emergency (20+ km/h/s)
 - Circle size (hotspot mode): proportional to number of events at that location
 
 ## Configuration
@@ -246,8 +246,8 @@ DEFAULT_WHEEL_DIAMETER_MM = 711  # fallback if not in trip metadata
 
 | Source | Speed | Road Quality | Braking |
 |--------|-------|--------------|---------|
-| Local CSV (via pipeline) | Wheel rotation — accurate | Real — from accelerometer | ✅ Detected from speed deltas |
-| Supabase API | GPS — approximate | Real — from accelerometer | ❌ Not available (no wheel data) |
+| Local CSV (via pipeline) | Wheel rotation — accurate | Real — from accelerometer | Detected from speed deltas |
+| Supabase API | GPS — approximate | Real — from accelerometer | Not available (no wheel data) |
 
 Local processed trips always take priority in `trips.geojson`.
 
