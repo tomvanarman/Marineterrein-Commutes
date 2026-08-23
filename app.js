@@ -137,6 +137,50 @@ function applyBrakingTripFilter(tripId) {
   }
 }
 
+// ─── Trip dates ───────────────────────────────────────────────────────────────
+let tripDateMap = {};
+
+function buildTripDateMap(features) {
+  tripDateMap = {};
+  for (const f of features) {
+    const tid = f.properties?.trip_id;
+    const ts  = f.properties?.timestamp;
+    if (!tid || !ts || tripDateMap[tid]) continue;
+    tripDateMap[tid] = ts;
+  }
+}
+
+// Returns the raw date/timestamp value for a trip, or null if unknown.
+// Prefers the per-feature "timestamp" property (from trips.geojson); falls
+// back to the "Trip start/end" metadata field for trips that predate it.
+function getTripDate(tripId) {
+  if (tripDateMap[tripId]) return tripDateMap[tripId];
+  const meta = tripsMetadata?.[tripId];
+  const raw  = meta?.['Trip start/end'] || meta?.metadata?.['Trip start/end'];
+  if (raw) {
+    const start = raw.split(',').map(p => p.trim()).filter(Boolean)[0];
+    if (start) return start;
+  }
+  return null;
+}
+
+// Returns YYYY-MM-DD for a trip, for comparison against an <input type="date"> value.
+function getTripDateOnly(tripId) {
+  const raw = getTripDate(tripId);
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatDateDMY(rawDate) {
+  const d = new Date(rawDate);
+  if (isNaN(d.getTime())) return rawDate; // unparsed — show the raw string rather than hide it
+  const dd   = String(d.getDate()).padStart(2, '0');
+  const mm   = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
+}
+
 // ─── Data loading ─────────────────────────────────────────────────────────────
 async function loadMetadata() {
   const paths = [`${CONFIG.DATA_URL}trips_metadata.json`, './trips_metadata.json', 'trips_metadata.json'];
@@ -340,8 +384,10 @@ function resetSelection() {
   }
 
   const searchInput = document.getElementById('tripSearchInput');
+  const dateInput   = document.getElementById('tripDateFilter');
   const clearBtn    = document.getElementById('tripClearButton');
   if (searchInput) searchInput.value = '';
+  if (dateInput)   dateInput.value   = '';
   if (clearBtn)    clearBtn.style.display = 'none';
 
   document.getElementById('selectedTripRow').style.display  = 'none';
@@ -360,8 +406,10 @@ function clearSearch() {
   selectedTrip = null;
   activeFilter = null;
   const input    = document.getElementById('tripSearchInput');
+  const dateInput = document.getElementById('tripDateFilter');
   const clearBtn = document.getElementById('tripClearButton');
   if (input)    input.value = '';
+  if (dateInput) dateInput.value = '';
   if (clearBtn) clearBtn.style.display = 'none';
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
@@ -389,13 +437,18 @@ function showSelection(tripId) {
   updateResetButtonVisibility();
 }
 
-function searchAndHighlightTrip(term) {
-  if (!term) { resetSelection(); return; }
-  const q       = term.toLowerCase().trim();
-  const matches = tripIds.filter(id => id.toLowerCase().includes(q));
+function searchAndHighlightTrip(term, dateFilter) {
+  const q = (term || '').toLowerCase().trim();
+  if (!q && !dateFilter) { resetSelection(); return; }
+
+  let matches = tripIds;
+  if (q)          matches = matches.filter(id => id.toLowerCase().includes(q));
+  if (dateFilter) matches = matches.filter(id => getTripDateOnly(id) === dateFilter);
+
+  const label = [term && term.trim(), dateFilter && formatDateDMY(dateFilter)].filter(Boolean).join(' on ');
 
   if (matches.length === 0) {
-    alert(`No trip found matching: ${term}`);
+    alert(`No trip found matching: ${label}`);
     return false;
   }
 
@@ -415,7 +468,7 @@ function searchAndHighlightTrip(term) {
     document.getElementById('statAvgSpeedRow').style.display  = 'none';
     document.getElementById('statTotalTimeRow').style.display = 'none';
     document.getElementById('selectedTripRow').style.display  = 'flex';
-    document.getElementById('selectedTrip').textContent = `${term.toUpperCase()} — ${matches.length} trips`;
+    document.getElementById('selectedTrip').textContent = `${label.toUpperCase()} — ${matches.length} trips`;
     updateResetButtonVisibility();
   }
 
@@ -663,6 +716,7 @@ map.on('load', async () => {
     console.log(`📊 ${tripIds.length} unique trips loaded`);
 
     buildSensorColorMap(tripIds);
+    buildTripDateMap(geojson.features || []);
 
     map.addSource('trips', {
       type: 'geojson',
@@ -717,6 +771,8 @@ map.on('load', async () => {
       const qualityLabels = { 0:'Unknown', 1:'Perfect', 2:'Normal', 3:'Outdated', 4:'Bad', 5:'No road' };
       const popupName  = tripId.replace(/_/g, ' ').trim();
       const brakingLine = geoBraking > 0 ? `<br>🛑 Braking events: ${geoBraking}` : '';
+      const rideDate    = getTripDate(tripId);
+      const dateLine    = rideDate ? `<br>📅 Date: ${formatDateDMY(rideDate)}` : '';
 
       currentPopup = new mapboxgl.Popup()
         .setLngLat(e.lngLat)
@@ -727,7 +783,7 @@ map.on('load', async () => {
           📊 Average speed: ${avgSpeed} km/h<br>
           🏁 Max speed: ${maxSpeed} km/h<br>
           📍 Total distance: ${distanceKm} km<br>
-          ⏱️ Duration: ${duration}${brakingLine}
+          ⏱️ Duration: ${duration}${brakingLine}${dateLine}
         `)
         .addTo(map);
     });
@@ -901,44 +957,52 @@ function setupControls() {
   if (resetBtn) resetBtn.addEventListener('click', resetSelection);
 
   const searchInput   = document.getElementById('tripSearchInput');
+  const dateInput     = document.getElementById('tripDateFilter');
   const searchButton  = document.getElementById('tripSearchButton');
   const suggestionBox = document.getElementById('searchSuggestions');
 
   if (searchInput && searchButton && suggestionBox) {
-    function getSensorNames() { return [...new Set(tripIds.map(id => id.split('_')[0]))].sort(); }
+    function currentDate() { return dateInput ? dateInput.value : ''; }
+    function idsForDate(ids) { const d = currentDate(); return d ? ids.filter(id => getTripDateOnly(id) === d) : ids; }
+    function getSensorNames() { return [...new Set(idsForDate(tripIds).map(id => id.split('_')[0]))].sort(); }
     function hideSuggestions() { suggestionBox.style.display = 'none'; suggestionBox.innerHTML = ''; }
     function showSuggestions(query) {
       const q = query.trim().toLowerCase();
       suggestionBox.innerHTML = '';
-      if (!q) { hideSuggestions(); return; }
-      const sensors = getSensorNames().filter(s => s.toLowerCase().startsWith(q));
-      const trips   = tripIds.filter(id => id.toLowerCase().startsWith(q) && !sensors.some(s => id.startsWith(s)));
+      if (!q && !currentDate()) { hideSuggestions(); return; }
+      const pool    = idsForDate(tripIds);
+      const sensors = getSensorNames().filter(s => !q || s.toLowerCase().startsWith(q));
+      const trips   = pool.filter(id => (!q || id.toLowerCase().startsWith(q)) && !sensors.some(s => id.startsWith(s)));
       if (!sensors.length && !trips.length) { hideSuggestions(); return; }
       sensors.forEach(sensor => {
-        const count = tripIds.filter(id => id.startsWith(sensor)).length;
+        const count = pool.filter(id => id.startsWith(sensor)).length;
         const li = document.createElement('li');
         li.textContent = `📡 ${sensor}  (${count} trip${count !== 1 ? 's' : ''})`;
         li.className = 'suggestion-sensor';
-        li.addEventListener('mousedown', () => { searchInput.value = sensor; hideSuggestions(); searchAndHighlightTrip(sensor); });
+        li.addEventListener('mousedown', () => { searchInput.value = sensor; hideSuggestions(); searchAndHighlightTrip(sensor, currentDate()); });
         suggestionBox.appendChild(li);
       });
       trips.forEach(tripId => {
         const li = document.createElement('li');
         li.textContent = `🚴 ${tripId}`;
         li.className = 'suggestion-trip';
-        li.addEventListener('mousedown', () => { searchInput.value = tripId; hideSuggestions(); searchAndHighlightTrip(tripId); });
+        li.addEventListener('mousedown', () => { searchInput.value = tripId; hideSuggestions(); searchAndHighlightTrip(tripId, currentDate()); });
         suggestionBox.appendChild(li);
       });
       suggestionBox.style.display = 'block';
     }
 
-    searchButton.addEventListener('click', () => { hideSuggestions(); searchAndHighlightTrip(searchInput.value); });
+    searchButton.addEventListener('click', () => { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDate()); });
     const clearBtn = document.getElementById('tripClearButton');
     if (clearBtn) clearBtn.addEventListener('click', () => { hideSuggestions(); clearSearch(); });
-    searchInput.addEventListener('keypress', e => { if (e.key === 'Enter') { hideSuggestions(); searchAndHighlightTrip(searchInput.value); } });
+    searchInput.addEventListener('keypress', e => { if (e.key === 'Enter') { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDate()); } });
     searchInput.addEventListener('input',  e => showSuggestions(e.target.value));
-    searchInput.addEventListener('focus',  e => { if (e.target.value) showSuggestions(e.target.value); });
+    searchInput.addEventListener('focus',  e => { if (e.target.value || currentDate()) showSuggestions(e.target.value); });
     searchInput.addEventListener('blur',   () => setTimeout(hideSuggestions, 150));
+
+    if (dateInput) {
+      dateInput.addEventListener('change', () => { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDate()); });
+    }
   }
 
   const speedCb = document.getElementById('speedColorsCheckbox');
@@ -1048,10 +1112,11 @@ function renderSensorLegend() {
 
   legend.querySelectorAll('.sensor-legend-item').forEach(item => {
     item.addEventListener('click', () => {
-      const sensor = item.dataset.sensor;
-      const input  = document.getElementById('tripSearchInput');
+      const sensor    = item.dataset.sensor;
+      const input     = document.getElementById('tripSearchInput');
+      const dateInput = document.getElementById('tripDateFilter');
       if (input) input.value = sensor;
-      searchAndHighlightTrip(sensor);
+      searchAndHighlightTrip(sensor, dateInput ? dateInput.value : '');
     });
   });
 
