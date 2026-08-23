@@ -142,22 +142,5 @@
     "Trip start/end": ", 2026-04-22 09:50:30.058, 2026-04-22 10:04:28.798",
     "SENSOR": ",13:59,01:24,2.99,12.8,14.2,27.9,-14.08,14.26,--,43",
     "GNSS": ",13:58,00:32,3.313,14,15,23,,,,,0"
-  },
-  "604F0_Trip2": {
-    "source_file": "DC8E95FFFE7604F0_20260819_144643.csv",
-    "Charge(start | stop)": ", 91 | 88%",
-    "WheelDiam": ", 28.0 inch",
-    "Frequency": ", 50.0 Hz",
-    "Trip stop code": ", 1 (Normal finish)",
-    "BLE Device Information Service": "BLE Device Information Service",
-    "Hardware": ", 005",
-    "Firmware": ",3.0.5",
-    "SystemID": ", DC8E95FFFE7604F0",
-    "App version": ", 1.1.5+44",
-    "Sensor's connection": ", 2026-08-19 14:46:37.261, 2026-08-19 15:02:28.602",
-    "Trip start/end": ", 2026-08-19 14:46:43.129, 2026-08-19 15:02:23.729",
-    "SENSOR": ",15:39,03:01,4.40,16.9,20.9,32.2,-14.44,17.94,--,59",
-    "GNSS": ",15:43,01:26,4.35,17,18,33,,,,,3",
-    "source": "local_csv"
   }
 }
