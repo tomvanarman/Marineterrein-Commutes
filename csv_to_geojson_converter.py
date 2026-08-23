@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -273,6 +274,49 @@ def filter_gnss_max_speed(gnss_value):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Per-row timestamp extraction (used for both local/manual and API CSVs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Known/likely column names, matched case-insensitively. API-fetched rows are
+# guaranteed to have "GNSS Timestamp" (see RECONSTRUCTION_QUERY above); local
+# hardware CSVs aren't guaranteed to use the same header, so we also fall back
+# to any column whose name simply *contains* "timestamp", or common date-only
+# variants. If a device CSV turns out to use something else entirely, add its
+# exact header here.
+_TIMESTAMP_KEY_CANDIDATES = ('gnss timestamp', 'timestamp', 'datetime', 'date time', 'date')
+
+_TIMESTAMP_FORMATS = (
+    '%Y-%m-%d %H:%M:%S.%f',
+    '%Y-%m-%d %H:%M:%S',
+    '%Y-%m-%dT%H:%M:%S.%f',
+    '%Y-%m-%dT%H:%M:%S',
+)
+
+def extract_row_timestamp(row):
+    """
+    Find a per-row timestamp/date value in a CSV DictReader row and return it
+    as an ISO-8601 string when it matches a known format, or the raw string
+    as-is if not (still useful for display/filtering even if unparsed).
+    Returns None if no timestamp-like column is present or the value is empty.
+    """
+    for key, val in row.items():
+        if not val:
+            continue
+        key_lower = (key or '').strip().lower()
+        if key_lower in _TIMESTAMP_KEY_CANDIDATES or 'timestamp' in key_lower:
+            val = val.strip()
+            if not val:
+                continue
+            for fmt in _TIMESTAMP_FORMATS:
+                try:
+                    return datetime.strptime(val, fmt).isoformat()
+                except ValueError:
+                    continue
+            return val  # unparsed but non-empty — pass through raw
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Trip numbering (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -319,6 +363,9 @@ def process_csv(input_path, sensor_id, trip_num, extra_meta=None):
             if coord1 and coord2:
                 props = {k: v for k, v in row1.items() if k not in ['latitude', 'longitude']}
                 props["trip_id"] = f"{sensor_id}_Trip{trip_num}"
+                row_ts = extract_row_timestamp(row1)
+                if row_ts:
+                    props["timestamp"] = row_ts
                 feature = {
                     "type": "Feature",
                     "geometry": {
@@ -373,6 +420,13 @@ def process_csv(input_path, sensor_id, trip_num, extra_meta=None):
                     metadata[parts[0]] = raw_value
 
         metadata["source"] = "local_csv"
+
+        # Derive a trip-level date range from the per-row timestamps we just
+        # extracted, mirroring the "Trip start/end" field API-sourced trips
+        # already carry — keeps metadata consistent across both sources.
+        row_timestamps = [f["properties"].get("timestamp") for f in features if f["properties"].get("timestamp")]
+        if row_timestamps and "Trip start/end" not in metadata:
+            metadata["Trip start/end"] = f", {row_timestamps[0]}, {row_timestamps[-1]}"
     else:
         # Merge API metadata (trip_start/end, source tag, supabase_trip_id, etc.)
         metadata.update(extra_meta or {})

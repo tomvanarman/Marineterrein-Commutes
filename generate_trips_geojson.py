@@ -351,6 +351,7 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
             "properties": {
                 "trip_id":           trip_id,
                 "db_trip_id":        db_trip_id,
+                "timestamp":         a["timestamp"].isoformat() if a["timestamp"] else None,
                 "Speed":             round(speed_kmh, 1),
                 "marker":            0,
                 "Acc Y (g)":         0,
