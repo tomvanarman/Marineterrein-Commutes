@@ -29,6 +29,7 @@ let averagedSegmentMode = 'composite';
 let searchActive = false;
 let activeFilter = null;
 let showBraking = false;
+let showCrashes = false;
 
 // ─── Sensor colours ───────────────────────────────────────────────────────────
 const SENSOR_COLORS = [
@@ -356,7 +357,7 @@ function resetSelection() {
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
 
-  ['speedColorsCheckbox','roadQualityCheckbox','averagedSegmentsCheckbox','brakingCheckbox'].forEach(id => {
+  ['speedColorsCheckbox','roadQualityCheckbox','averagedSegmentsCheckbox','brakingCheckbox','crashCheckbox'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.checked = false;
   });
@@ -368,6 +369,8 @@ function resetSelection() {
   document.getElementById('averagedModeGroup').style.display      = 'none';
   const brakingLegend = document.getElementById('brakingLegend');
   if (brakingLegend) brakingLegend.style.display = 'none';
+  const crashLegend = document.getElementById('crashLegend');
+  if (crashLegend) crashLegend.style.display = 'none';
 
   if (map.getLayer('averaged-segments'))
     map.setLayoutProperty('averaged-segments', 'visibility', 'none');
@@ -375,6 +378,10 @@ function resetSelection() {
     map.setLayoutProperty('braking-hotspots-halo', 'visibility', 'none');
   if (map.getLayer('braking-hotspots-dot'))
     map.setLayoutProperty('braking-hotspots-dot', 'visibility', 'none');
+  if (map.getLayer('crash-events-halo'))
+    map.setLayoutProperty('crash-events-halo', 'visibility', 'none');
+  if (map.getLayer('crash-events-dot'))
+    map.setLayoutProperty('crash-events-dot', 'visibility', 'none');
 
   if (map.getLayer('trips-layer')) {
     map.setLayoutProperty('trips-layer', 'visibility', 'visible');
@@ -662,6 +669,111 @@ function setupBrakingLayer(geojson, labelLayerId) {
   console.log('✅ Braking hotspot layer added');
 }
 
+// ─── Crash / fall events ────────────────────────────────────────────────────
+function getCrashColorExpression() {
+  return [
+    'match', ['get', 'severity'],
+    'Severe', '#ff1744',
+    'Hard',   '#ff9100',
+    'Minor',  '#ffea00',
+    /* default */ '#ffea00',
+  ];
+}
+
+function buildCrashFeatures(features) {
+  const crashFeatures = (features || []).filter(f => f.properties.event_type === 'crash');
+  console.log(`🚨 Found ${crashFeatures.length} crash/fall event(s)`);
+  return { type: 'FeatureCollection', features: crashFeatures };
+}
+
+function setupCrashLayer(geojson, labelLayerId) {
+  const crashData = buildCrashFeatures(geojson.features || []);
+
+  map.addSource('crash-events', { type: 'geojson', data: crashData });
+
+  map.addLayer({
+    id: 'crash-events-halo',
+    type: 'circle',
+    source: 'crash-events',
+    layout: { visibility: 'none' },
+    paint: {
+      'circle-color': getCrashColorExpression(),
+      'circle-radius': [
+        'case', ['get', 'unresolved'],
+        ['interpolate', ['linear'], ['zoom'], 10, 22, 14, 34, 17, 48],
+        ['interpolate', ['linear'], ['zoom'], 10, 14, 14, 22, 17, 32],
+      ],
+      'circle-blur':            1.0,
+      'circle-opacity':         0.4,
+      'circle-pitch-alignment': 'map',
+    },
+  }, labelLayerId);
+
+  map.addLayer({
+    id: 'crash-events-dot',
+    type: 'circle',
+    source: 'crash-events',
+    layout: { visibility: 'none' },
+    paint: {
+      'circle-color':        getCrashColorExpression(),
+      'circle-radius':       ['interpolate', ['linear'], ['zoom'], 10, 6, 14, 9, 17, 13],
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2,
+      'circle-opacity':         0.95,
+      'circle-pitch-alignment': 'map',
+    },
+  }, labelLayerId);
+
+  map.on('click', 'crash-events-dot', (e) => {
+    e.preventDefault();
+    if (e.originalEvent) e.originalEvent.stopPropagation();
+    const p = e.features[0].properties;
+
+    const speedLine = p.speed_at_impact_kmh != null
+      ? `🚴 Speed at impact: ${p.speed_at_impact_kmh} km/h`
+      : `🚴 Speed at impact: unknown`;
+
+    const recoveryLine = p.unresolved
+      ? `⚠️ <strong>Wheel didn't turn again for the rest of the trip</strong>`
+      : p.came_to_stop
+        ? `🧍 Came to a stop, moving again after ${p.recovery_time_s}s`
+        : `↪️ Kept moving — no stop detected nearby`;
+
+    new mapboxgl.Popup()
+      .setLngLat(e.lngLat)
+      .setHTML(`
+        <strong>🚨 ${p.severity} Impact</strong><br>
+        💥 Peak force: ${p.peak_g}g<br>
+        ⚡ Onset: ${p.suddenness_s}s to peak<br>
+        ${speedLine}<br>
+        ${recoveryLine}<br>
+        🕐 ${p.time_str || 'time unknown'} · trip ${p.trip_id}
+      `)
+      .addTo(map);
+  });
+
+  map.on('mouseenter', 'crash-events-dot', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'crash-events-dot', () => { map.getCanvas().style.cursor = ''; });
+
+  console.log('✅ Crash/fall layer added');
+}
+
+function setupCrashControls() {
+  const cb = document.getElementById('crashCheckbox');
+  if (!cb) return;
+
+  cb.addEventListener('change', (e) => {
+    showCrashes = e.target.checked;
+    const legend     = document.getElementById('crashLegend');
+    const visibility = showCrashes ? 'visible' : 'none';
+
+    if (map.getLayer('crash-events-halo')) map.setLayoutProperty('crash-events-halo', 'visibility', visibility);
+    if (map.getLayer('crash-events-dot'))  map.setLayoutProperty('crash-events-dot',  'visibility', visibility);
+
+    if (legend) legend.style.display = showCrashes ? 'block' : 'none';
+  });
+}
+
 // ─── Isochrone ────────────────────────────────────────────────────────────────
 async function updateIsochrone(active) {
   const spinner = document.getElementById('isoSpinner');
@@ -803,6 +915,7 @@ map.on('load', async () => {
     });
 
     setupBrakingLayer(geojson, labelLayerId);
+    setupCrashLayer(geojson, labelLayerId);
     await setupAveragedSegments(labelLayerId);
 
     setupControls();
@@ -1062,6 +1175,7 @@ function setupControls() {
 
   setupAveragedSegmentControls();
   setupBrakingControls();
+  setupCrashControls();
 
   const isoToggle = document.getElementById('isoToggle');
   if (isoToggle) isoToggle.addEventListener('change', e => updateIsochrone(e.target.checked));

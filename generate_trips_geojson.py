@@ -156,7 +156,7 @@ order by "timestamp"
 
 # 3. data1 anchors for sample→timestamp mapping (road quality lookup)
 DATA1_QUERY = """
-select samples, "timestamp"
+select samples, "timestamp", h_rot
 from public.data1
 where trip_id = %(trip_id)s
 order by samples
@@ -243,6 +243,187 @@ def calculate_braking_intensity(prev_speed_kmh, curr_speed_kmh, time_diff_s):
     if delta <= 0:
         return 0.0
     return round(min(delta / time_diff_s, BRAKING_INTENSITY_CAP_KMH_S), 2)
+
+# ── Crash/fall detection (API path) ─────────────────────────────────────────
+# Threshold validated against a real test ride: cobblestone/pothole jolts
+# stayed under ~5g; genuine falls/impacts were 7-13g.
+CRASH_IMPACT_THRESHOLD_G   = 6.0
+CRASH_CLUSTER_GAP_S        = 1.0
+CRASH_COOLDOWN_S           = 2.0
+CRASH_STALL_THRESHOLD_S    = 1.0
+CRASH_STOP_SEARCH_WINDOW_S = 3.0
+CRASH_SPEED_LOOKBACK_S     = 2.0
+
+CRASH_SEVERITY_BANDS = [
+    (6.0,  8.0,  "Minor"),
+    (8.0,  11.0, "Hard"),
+    (11.0, None, "Severe"),
+]
+
+
+def _crash_severity(peak_g):
+    mag = abs(peak_g)
+    for low, high, label in CRASH_SEVERITY_BANDS:
+        if mag >= low and (high is None or mag < high):
+            return label
+    return "Minor"
+
+
+def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
+                             gnss_rows, gnss_cols, trip_id, wheel_diam_mm):
+    """
+    Detect crash/fall events for a Supabase-fetched trip.
+
+    raw_rows/raw_cols : per-sample acc_y, from RAW_QUERY (samples, acc_y)
+    d1_rows/d1_cols    : per-sample timestamp + h_rot anchors, from DATA1_QUERY
+    gnss_rows/gnss_cols: lat/lon/speed/timestamp trace, used to approximate
+                         where each crash happened (nearest GPS fix by time)
+    """
+    if not raw_rows or not d1_rows:
+        return []
+
+    raw = sorted(
+        (dict(zip(raw_cols, r)) for r in raw_rows),
+        key=lambda r: r["samples"]
+    )
+    d1 = sorted(
+        (dict(zip(d1_cols, r)) for r in d1_rows),
+        key=lambda r: r["samples"]
+    )
+    gnss = [dict(zip(gnss_cols, r)) for r in gnss_rows] if gnss_rows else []
+
+    d1_samples = [r["samples"] for r in d1]
+    gnss_ts    = [r["timestamp"] for r in gnss] if gnss else []
+
+    def nearest_d1(sample_idx):
+        pos = bisect.bisect_left(d1_samples, sample_idx)
+        if pos == 0:
+            return d1[0]
+        if pos >= len(d1_samples):
+            return d1[-1]
+        before, after = d1[pos - 1], d1[pos]
+        return before if abs(before["samples"] - sample_idx) <= abs(after["samples"] - sample_idx) else after
+
+    def nearest_gnss(ts):
+        if not gnss_ts or ts is None:
+            return None
+        pos = bisect.bisect_left(gnss_ts, ts)
+        if pos == 0:
+            return gnss[0]
+        if pos >= len(gnss_ts):
+            return gnss[-1]
+        before, after = gnss[pos - 1], gnss[pos]
+        return before if abs((before["timestamp"] - ts).total_seconds()) <= abs((after["timestamp"] - ts).total_seconds()) else after
+
+    points = []
+    for r in raw:
+        anchor = nearest_d1(r["samples"])
+        points.append({
+            "samples": r["samples"],
+            "acc_y":   float(r["acc_y"] or 0),
+            "time":    anchor["timestamp"],
+            "hrot":    anchor.get("h_rot") or 0,
+        })
+
+    if len(points) < 3:
+        return []
+
+    def t_diff(a, b):
+        if a["time"] and b["time"]:
+            return (b["time"] - a["time"]).total_seconds()
+        return (b["samples"] - a["samples"]) * 0.02  # 50Hz fallback
+
+    wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi if wheel_diam_mm else None
+
+    events = []
+    i, n = 0, len(points)
+
+    while i < n:
+        if abs(points[i]["acc_y"]) >= CRASH_IMPACT_THRESHOLD_G:
+            start = i
+            end = i
+            j = i + 1
+            while j < n:
+                if t_diff(points[end], points[j]) > CRASH_CLUSTER_GAP_S:
+                    break
+                if abs(points[j]["acc_y"]) >= CRASH_IMPACT_THRESHOLD_G:
+                    end = j
+                j += 1
+
+            peak_idx = max(range(start, end + 1), key=lambda k: abs(points[k]["acc_y"]))
+            peak_g = points[peak_idx]["acc_y"]
+
+            b_idx = start
+            while b_idx > max(0, start - 25) and abs(points[b_idx]["acc_y"]) > 1.0:
+                b_idx -= 1
+            suddenness_s = round(t_diff(points[b_idx], points[peak_idx]), 2)
+
+            speed_kmh = None
+            if wheel_circumference_m:
+                lb_idx = start
+                while lb_idx > 0 and t_diff(points[lb_idx], points[start]) < CRASH_SPEED_LOOKBACK_S:
+                    lb_idx -= 1
+                hrot_diff = points[start]["hrot"] - points[lb_idx]["hrot"]
+                lb_time_s = t_diff(points[lb_idx], points[start])
+                if hrot_diff > 0 and lb_time_s and lb_time_s >= 0.02:
+                    revolutions = hrot_diff / 2.0
+                    distance_m  = revolutions * wheel_circumference_m
+                    speed_kmh   = round(min((distance_m / lb_time_s) * 3.6, 40), 1)
+
+            came_to_stop = False
+            recovery_time_s = None
+            unresolved = False
+            cursor = end
+            while cursor < n - 1 and t_diff(points[end], points[cursor]) <= CRASH_STOP_SEARCH_WINDOW_S:
+                hrot_now = points[cursor]["hrot"]
+                k = cursor + 1
+                while k < n and points[k]["hrot"] == hrot_now:
+                    k += 1
+                if k >= n:
+                    unresolved = True
+                    break
+                gap = t_diff(points[cursor], points[k])
+                if gap >= CRASH_STALL_THRESHOLD_S:
+                    came_to_stop = True
+                    recovery_time_s = round(gap, 2)
+                    break
+                cursor = k
+
+            onset_ts = points[start]["time"]
+            fix      = nearest_gnss(onset_ts)
+            if fix is None:
+                i = end + 1
+                continue
+
+            events.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(fix["longitude"]), float(fix["latitude"])],
+                },
+                "properties": {
+                    "event_type":           "crash",
+                    "trip_id":              trip_id,
+                    "peak_g":               round(peak_g, 2),
+                    "severity":             _crash_severity(peak_g),
+                    "suddenness_s":         suddenness_s,
+                    "speed_at_impact_kmh":  speed_kmh,
+                    "came_to_stop":         came_to_stop,
+                    "recovery_time_s":      recovery_time_s,
+                    "unresolved":           unresolved,
+                    "time_str":             onset_ts.strftime("%H:%M:%S") if onset_ts else None,
+                    "location_approximate": True,
+                },
+            })
+
+            cool_i = end + 1
+            while cool_i < n and t_diff(points[end], points[cool_i]) <= CRASH_COOLDOWN_S:
+                cool_i += 1
+            i = cool_i
+        else:
+            i += 1
+
+    return events
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
@@ -445,9 +626,17 @@ def load_remote_trips(existing_trip_ids):
             )
 
             braking_count = sum(1 for f in new_feats if f["properties"]["is_braking"])
+
+            crash_feats = detect_crash_events_api(
+                raw_rows, raw_cols, d1_rows, d1_cols,
+                gnss_rows, gnss_cols, trip_id, wheel_diam_mm
+            )
+            new_feats.extend(crash_feats)
+
             features.extend(new_feats)
             print(f"  ✅ {trip_id}: {len(gnss_rows)} gnss pts → {len(new_feats)} segments"
-                  + (f" | 🛑 {braking_count} braking events" if braking_count else ""))
+                  + (f" | 🛑 {braking_count} braking events" if braking_count else "")
+                  + (f" | 🚨 {len(crash_feats)} crash events" if crash_feats else ""))
 
         except Exception as e:
             print(f"  ❌ {trip_id}: {e}")
