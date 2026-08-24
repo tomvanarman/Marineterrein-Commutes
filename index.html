@@ -78,6 +78,16 @@
           This threshold was adjusted so as to distinguish genuine sudden braking (e.g. at 
           intersections, obstacles, or unsafe road conditions) from normal slowdowns.
         </p>
+        <h5>Crashes &amp; Falls</h5>
+        <p>
+          Flags individual high-impact events — sudden accelerometer spikes consistent with a
+          crash or fall — detected from onboard sensor data. Each point is classified by
+          severity (Minor, Hard, Severe) based on peak impact force, and clicking a point
+          shows the speed at impact and whether the sensor recovered movement afterward.
+          Unlike Sudden Braking, this layer marks discrete incidents rather than accumulated
+          hotspots, so it can be combined with other layers to check whether a crash occurred
+          in a known slow or poor-quality stretch.
+        </p>
       </section>
       <section>
         <h4>Using Filters and Interpretations</h4>
@@ -210,6 +220,13 @@
     </div>
 
     <div class="control-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="crashCheckbox">
+        Crashes &amp; Falls
+      </label>
+    </div>
+
+    <div class="control-group">
       <div class="control-label">TRAVEL RANGE</div>
       <label class="toggle-container iso-spacing">
         <input type="checkbox" id="isoToggle">
@@ -301,6 +318,15 @@
     <div class="speed-legend-item"><div class="speed-color-box" style="background:#FF9800;"></div><span>3–7 events</span></div>
     <div class="speed-legend-item"><div class="speed-color-box" style="background:#D32F2F;"></div><span>8–19 events</span></div>
     <div class="speed-legend-item"><div class="speed-color-box" style="background:#9C27B0;"></div><span>20+ events</span></div>
+  </div>
+
+  <!-- Crash / fall legend — severity only -->
+  <div class="legend" id="crashLegend" style="display:none;">
+    <strong>CRASHES &amp; FALLS</strong>
+    <p style="margin:4px 0 8px; font-size:0.75rem; opacity:0.8;">Colour = impact severity</p>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#ffea00;"></div><span>Minor</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#ff9100;"></div><span>Hard</span></div>
+    <div class="speed-legend-item"><div class="speed-color-box" style="background:#ff1744;"></div><span>Severe</span></div>
   </div>
 
   <div class="legend" id="sensorLegend" style="display:none;">
