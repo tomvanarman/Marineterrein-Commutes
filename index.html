@@ -80,12 +80,20 @@
         </p>
         <h5>Crashes &amp; Falls</h5>
         <p>
-          Flags individual high-impact events detected from onboard accelerometer data.
-          A spike alone isn't enough — cobblestones and potholes hit just as hard for an
-          instant, then bounce straight back into normal riding vibration. A crash is only
-          confirmed if the reading also stays flat for a beat afterward, matching a bike
-          lying still rather than riding on. Each point is classified by severity (Minor,
-          Hard, Severe), and clicking one shows the speed at impact and how it resolved.
+          A "g" is a unit of acceleration equal to Earth's gravity (9.8 m/s²)— 
+          the standard way to measure impact force.
+
+          An incident is flagged when the accelerometer registers a sharp impact
+          of 6g or greater. To rule out false positives from potholes or rough 
+          terrain, the system then checks that the bike came to rest afterward: 
+          within 3 seconds of the impact, it looks for either the sensor readings 
+          settling into a narrow band (varying by no more than 1g) for at least 1 
+          continuous second, or the wheel rotation stopping advancing for that 
+          same stretch— since a spinning wheel can keep vibrating even after the 
+          bike itself is down. Either signal is enough to confirm a fall; if neither 
+          settles, the spike is treated as normal riding activity. Confirmed incidents 
+          are classified by peak impact force: 6–8g is Minor, 8–11g is Hard, and 11g or 
+          greater is Severe.
         </p>
       </section>
       <section>
