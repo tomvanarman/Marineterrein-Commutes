@@ -793,6 +793,10 @@ function setupCrashControls() {
     if (map.getLayer('crash-events-dot'))  map.setLayoutProperty('crash-events-dot',  'visibility', visibility);
 
     if (legend) legend.style.display = showCrashes ? 'block' : 'none';
+
+    updateResetButtonVisibility();
+    setTimeout(updateLegendPositions, 50);
+    updateStatsVisibility();
   });
 }
 
@@ -978,7 +982,7 @@ function updateStatsVisibility() {
 window.addEventListener('resize', updateStatsVisibility);
 
 function updateLegendPositions() {
-  const order   = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','brakingLegend','sensorLegend'];
+  const order   = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','brakingLegend','crashLegend','sensorLegend'];
   const visible = order.map(id => document.getElementById(id)).filter(el => el && el.style.display === 'block');
   const mobile  = window.matchMedia('(max-width: 768px)').matches;
   updateStatsVisibility();

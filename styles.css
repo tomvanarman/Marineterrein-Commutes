@@ -308,7 +308,6 @@ input[type="range"] {
 }
 
 .search-date-input::-webkit-calendar-picker-indicator {
-  filter: invert(1) brightness(2);
   cursor: pointer;
   opacity: 0.85;
 }
@@ -404,6 +403,17 @@ input[type="range"] {
 }
 
 .legend h4 {
+  margin: 0 0 10px 0;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 14px;
+  color: var(--sc-cyan);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+
+.legend > strong {
+  display: block;
   margin: 0 0 10px 0;
   font-family: 'Rajdhani', sans-serif;
   font-size: 14px;
