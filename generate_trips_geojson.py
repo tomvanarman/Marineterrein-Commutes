@@ -257,12 +257,16 @@ CRASH_SPEED_LOOKBACK_S     = 2.0
 # A single spike over threshold isn't enough on its own — cobblestone and
 # pothole jolts hit just as hard for one instant, then the signal snaps
 # right back into normal riding oscillation as the cyclist keeps going.
-# A real fall looks different afterward: the bike is down, so acc_y stops
-# oscillating and holds roughly flat for a stretch, instead of bouncing
-# back to the ~1g riding baseline. We require that stillness before we'll
-# call a spike a crash.
+# A real fall looks different afterward: the bike is down, so it should
+# come to rest instead of bouncing back to the ~1g riding baseline. We
+# require that stillness before we'll call a spike a crash — checked two
+# ways (see _settles_after_impact): either acc_y itself goes flat, or the
+# wheel stops turning. acc_y alone isn't reliable here because a downed
+# bike's wheel can keep freely spinning (no chain resistance, no rider
+# weight) and inject vibration into the accelerometer well after the
+# frame itself is still.
 CRASH_SETTLE_WINDOW_S      = CRASH_STOP_SEARCH_WINDOW_S  # how far past the spike to look for it
-CRASH_SETTLE_DURATION_S    = 1.0   # must hold flat for at least this long, contiguously
+CRASH_SETTLE_DURATION_S    = 1.0   # must hold flat/stalled for at least this long, contiguously
 CRASH_SETTLE_MAX_RANGE_G   = 1.0   # max (max-min) acc_y swing within that window to count as "flat"
 
 CRASH_SEVERITY_BANDS = [
@@ -280,13 +284,41 @@ def _crash_severity(peak_g):
     return "Minor"
 
 
+def _wheel_stalls_after_impact(points, from_idx, n, t_diff):
+    """
+    True if, within CRASH_SETTLE_WINDOW_S after from_idx, h_rot stops
+    advancing for at least CRASH_SETTLE_DURATION_S straight — the wheel
+    spinning down and stopping, independent of what acc_y is doing.
+    Catches falls where wheel/tire vibration keeps acc_y noisy even
+    though the bike itself is down.
+    """
+    cursor = from_idx
+    while cursor < n - 1 and t_diff(points[from_idx], points[cursor]) <= CRASH_SETTLE_WINDOW_S:
+        hrot_now = points[cursor]["hrot"]
+        k = cursor + 1
+        while k < n and points[k]["hrot"] == hrot_now:
+            k += 1
+        if k >= n:
+            return False
+        if t_diff(points[cursor], points[k]) >= CRASH_SETTLE_DURATION_S:
+            return True
+        cursor = k
+    return False
+
+
 def _settles_after_impact(points, from_idx, n, t_diff):
     """
-    True if, within CRASH_SETTLE_WINDOW_S samples after from_idx, acc_y
-    holds within a CRASH_SETTLE_MAX_RANGE_G band for at least
-    CRASH_SETTLE_DURATION_S straight. That flatness is the signature of a
-    bike lying still on the ground; a bump that the cyclist rode through
-    keeps oscillating and never holds still that long.
+    True if, within CRASH_SETTLE_WINDOW_S samples after from_idx, the bike
+    looks like it came to rest — either acc_y holds within a
+    CRASH_SETTLE_MAX_RANGE_G band for at least CRASH_SETTLE_DURATION_S
+    straight, or the wheel (h_rot) stops advancing for that same stretch.
+    Either signal is enough: a fall on its side may still show wheel-spin
+    noise in acc_y even though the frame is down, while a front-wheel-first
+    impact may stall the wheel but still let the frame rock slightly.
+    Requiring both would double-penalize noisy real crashes; requiring
+    either is more robust to sensor placement and impact angle. A bump
+    the cyclist rode through satisfies neither — acc_y keeps oscillating
+    and the wheel keeps turning — so it's correctly filtered out.
     """
     win_start = from_idx
     k = from_idx
@@ -301,7 +333,8 @@ def _settles_after_impact(points, from_idx, n, t_diff):
         if t_diff(points[from_idx], points[k]) > CRASH_SETTLE_WINDOW_S:
             break
         k += 1
-    return False
+
+    return _wheel_stalls_after_impact(points, from_idx, n, t_diff)
 
 
 def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
