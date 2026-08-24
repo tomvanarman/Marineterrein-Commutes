@@ -245,29 +245,20 @@ def calculate_braking_intensity(prev_speed_kmh, curr_speed_kmh, time_diff_s):
     return round(min(delta / time_diff_s, BRAKING_INTENSITY_CAP_KMH_S), 2)
 
 # ── Crash/fall detection (API path) ─────────────────────────────────────────
-# Threshold validated against a real test ride: cobblestone/pothole jolts
-# stayed under ~5g; genuine falls/impacts were 7-13g.
-CRASH_IMPACT_THRESHOLD_G   = 6.0
-CRASH_CLUSTER_GAP_S        = 1.0
-CRASH_COOLDOWN_S           = 2.0
-CRASH_STALL_THRESHOLD_S    = 1.0
-CRASH_STOP_SEARCH_WINDOW_S = 3.0
-CRASH_SPEED_LOOKBACK_S     = 2.0
+CRASH_IMPACT_THRESHOLD_G      = 6.0
+CRASH_CLUSTER_GAP_S           = 1.0
+CRASH_COOLDOWN_S              = 2.0
+CRASH_STALL_THRESHOLD_S       = 1.0
+CRASH_STOP_SEARCH_WINDOW_S    = 3.0
+CRASH_SPEED_LOOKBACK_S        = 2.0
 
-# A single spike over threshold isn't enough on its own — cobblestone and
-# pothole jolts hit just as hard for one instant, then the signal snaps
-# right back into normal riding oscillation as the cyclist keeps going.
-# A real fall looks different afterward: the bike is down, so it should
-# come to rest instead of bouncing back to the ~1g riding baseline. We
-# require that stillness before we'll call a spike a crash — checked two
-# ways (see _settles_after_impact): either acc_y itself goes flat, or the
-# wheel stops turning. acc_y alone isn't reliable here because a downed
-# bike's wheel can keep freely spinning (no chain resistance, no rider
-# weight) and inject vibration into the accelerometer well after the
-# frame itself is still.
-CRASH_SETTLE_WINDOW_S      = CRASH_STOP_SEARCH_WINDOW_S  # how far past the spike to look for it
-CRASH_SETTLE_DURATION_S    = 1.0   # must hold flat/stalled for at least this long, contiguously
-CRASH_SETTLE_MAX_RANGE_G   = 1.0   # max (max-min) acc_y swing within that window to count as "flat"
+CRASH_SETTLE_WINDOW_S         = CRASH_STOP_SEARCH_WINDOW_S
+CRASH_SETTLE_DURATION_S       = 1.0
+CRASH_SETTLE_MAX_RANGE_G      = 1.0
+CRASH_GPS_STILL_MAX_SPEED_KMH = 3.0
+CRASH_COORD_STALL_RADIUS_M    = 2.0
+CRASH_BASELINE_WINDOW_S        = 3.0
+CRASH_BASELINE_DELTA_MIN_G    = 0.5
 
 CRASH_SEVERITY_BANDS = [
     (6.0,  8.0,  "Minor"),
@@ -284,44 +275,25 @@ def _crash_severity(peak_g):
     return "Minor"
 
 
-def _wheel_stalls_after_impact(points, from_idx, n, t_diff):
+def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff):
     """
-    True if, within CRASH_SETTLE_WINDOW_S after from_idx, h_rot stops
-    advancing for at least CRASH_SETTLE_DURATION_S straight — the wheel
-    spinning down and stopping, independent of what acc_y is doing.
-    Catches falls where wheel/tire vibration keeps acc_y noisy even
-    though the bike itself is down.
+    True if:
+      1. Post-spike acc_y holds flat within CRASH_SETTLE_MAX_RANGE_G for >= CRASH_SETTLE_DURATION_S.
+      2. The mean post-spike acc_y differs from the pre-spike riding baseline mean by at least
+         CRASH_BASELINE_DELTA_MIN_G (confirming a physical tilt shift vs. normal upright riding).
     """
-    cursor = from_idx
-    while cursor < n - 1 and t_diff(points[from_idx], points[cursor]) <= CRASH_SETTLE_WINDOW_S:
-        hrot_now = points[cursor]["hrot"]
-        k = cursor + 1
-        while k < n and points[k]["hrot"] == hrot_now:
-            k += 1
-        if k >= n:
-            return False
-        if t_diff(points[cursor], points[k]) >= CRASH_SETTLE_DURATION_S:
-            return True
-        cursor = k
-    return False
+    pre_samples = []
+    k = spike_idx - 1
+    while k >= 0 and t_diff(points[k], points[spike_idx]) <= CRASH_BASELINE_WINDOW_S:
+        pre_samples.append(points[k]["acc_y"])
+        k -= 1
+    
+    if not pre_samples:
+        return False
+    baseline_mean = sum(pre_samples) / len(pre_samples)
 
-
-def _settles_after_impact(points, from_idx, n, t_diff):
-    """
-    True if, within CRASH_SETTLE_WINDOW_S samples after from_idx, the bike
-    looks like it came to rest — either acc_y holds within a
-    CRASH_SETTLE_MAX_RANGE_G band for at least CRASH_SETTLE_DURATION_S
-    straight, or the wheel (h_rot) stops advancing for that same stretch.
-    Either signal is enough: a fall on its side may still show wheel-spin
-    noise in acc_y even though the frame is down, while a front-wheel-first
-    impact may stall the wheel but still let the frame rock slightly.
-    Requiring both would double-penalize noisy real crashes; requiring
-    either is more robust to sensor placement and impact angle. A bump
-    the cyclist rode through satisfies neither — acc_y keeps oscillating
-    and the wheel keeps turning — so it's correctly filtered out.
-    """
-    win_start = from_idx
-    k = from_idx
+    win_start = end_idx
+    k = end_idx
     while k < n:
         while win_start < k and t_diff(points[win_start], points[k]) > CRASH_SETTLE_DURATION_S:
             win_start += 1
@@ -329,23 +301,79 @@ def _settles_after_impact(points, from_idx, n, t_diff):
             window = points[win_start:k + 1]
             vals   = [p["acc_y"] for p in window]
             if max(vals) - min(vals) <= CRASH_SETTLE_MAX_RANGE_G:
-                return True
-        if t_diff(points[from_idx], points[k]) > CRASH_SETTLE_WINDOW_S:
+                settled_mean = sum(vals) / len(vals)
+                if abs(settled_mean - baseline_mean) >= CRASH_BASELINE_DELTA_MIN_G:
+                    return True
+        if t_diff(points[end_idx], points[k]) > CRASH_SETTLE_WINDOW_S:
             break
         k += 1
 
-    return _wheel_stalls_after_impact(points, from_idx, n, t_diff)
+    return False
+
+
+def _gps_stops_after_impact(gnss, gnss_ts, onset_ts):
+    """
+    True if, within CRASH_SETTLE_WINDOW_S of onset_ts, GPS confirms the bike is stationary via:
+      1. Reported speed <= CRASH_GPS_STILL_MAX_SPEED_KMH for at least CRASH_SETTLE_DURATION_S.
+      2. Consecutive coordinate spread (haversine) <= CRASH_COORD_STALL_RADIUS_M over that window.
+    """
+    if not gnss_ts or onset_ts is None:
+        return False
+
+    pos = bisect.bisect_left(gnss_ts, onset_ts)
+    idx = pos
+    settle_fixes = []
+
+    while idx < len(gnss) and (gnss[idx]["timestamp"] - onset_ts).total_seconds() <= CRASH_SETTLE_WINDOW_S:
+        settle_fixes.append(gnss[idx])
+        idx += 1
+
+    if len(settle_fixes) < 2:
+        return False
+
+    run_start_ts = None
+    valid_speed_window = False
+
+    for fix in settle_fixes:
+        speed = float(fix["speed"] or 0)
+        if speed <= CRASH_GPS_STILL_MAX_SPEED_KMH:
+            if run_start_ts is None:
+                run_start_ts = fix["timestamp"]
+            elif (fix["timestamp"] - run_start_ts).total_seconds() >= CRASH_SETTLE_DURATION_S:
+                valid_speed_window = True
+                break
+        else:
+            run_start_ts = None
+
+    if not valid_speed_window:
+        return False
+
+    max_dist = 0.0
+    for i in range(len(settle_fixes)):
+        for j in range(i + 1, len(settle_fixes)):
+            d = haversine(settle_fixes[i], settle_fixes[j])
+            if d > max_dist:
+                max_dist = d
+
+    return max_dist <= CRASH_COORD_STALL_RADIUS_M
+
+
+def _settles_after_impact(points, spike_idx, end_idx, n, t_diff, gnss, gnss_ts, onset_ts):
+    """
+    True only if both post-impact conditions are met:
+      - acc_y settles to a flat value that differs significantly from pre-crash baseline
+      - GPS speed drops near zero AND coordinates stall within a tight radius
+    """
+    return (
+        _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff)
+        and _gps_stops_after_impact(gnss, gnss_ts, onset_ts)
+    )
 
 
 def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                              gnss_rows, gnss_cols, trip_id, wheel_diam_mm):
     """
     Detect crash/fall events for a Supabase-fetched trip.
-
-    raw_rows/raw_cols : per-sample acc_y, from RAW_QUERY (samples, acc_y)
-    d1_rows/d1_cols    : per-sample timestamp + h_rot anchors, from DATA1_QUERY
-    gnss_rows/gnss_cols: lat/lon/speed/timestamp trace, used to approximate
-                         where each crash happened (nearest GPS fix by time)
     """
     if not raw_rows or not d1_rows:
         return []
@@ -420,12 +448,9 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
 
             peak_idx = max(range(start, end + 1), key=lambda k: abs(points[k]["acc_y"]))
             peak_g = points[peak_idx]["acc_y"]
+            onset_ts = points[start]["time"]
 
-            if not _settles_after_impact(points, end, n, t_diff):
-                # Spike hit hard but the signal bounced right back into
-                # normal riding oscillation — a bump the cyclist rode
-                # through, not a fall. Don't count it, and don't apply the
-                # crash cooldown either since nothing was actually detected.
+            if not _settles_after_impact(points, start, end, n, t_diff, gnss, gnss_ts, onset_ts):
                 i = end + 1
                 continue
 
@@ -465,8 +490,7 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                     break
                 cursor = k
 
-            onset_ts = points[start]["time"]
-            fix      = nearest_gnss(onset_ts)
+            fix = nearest_gnss(onset_ts)
             if fix is None:
                 i = end + 1
                 continue
