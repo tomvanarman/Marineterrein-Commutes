@@ -157,9 +157,13 @@
       <div class="search-wrapper">
         <div class="search-input-row">
           <input type="text" id="tripSearchInput" placeholder="e.g., 602CA or 602CA_Trip1" autocomplete="off">
-          <input type="date" id="tripDateFilter" class="search-date-input" title="Filter by date" lang="en-GB" style="min-width:0; flex-shrink:1;">
           <button id="tripSearchButton">Search</button>
           <button id="tripClearButton" style="display:none;">✕</button>
+        </div>
+        <div class="date-range-row">
+          <input type="date" id="tripDateFrom" class="search-date-input" title="From date" lang="en-GB">
+          <span class="date-range-sep">–</span>
+          <input type="date" id="tripDateTo" class="search-date-input" title="To date" lang="en-GB">
         </div>
         <ul id="searchSuggestions"></ul>
       </div>

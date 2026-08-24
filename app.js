@@ -182,6 +182,23 @@ function formatDateDMY(rawDate) {
   return `${dd}-${mm}-${d.getFullYear()}`;
 }
 
+// range: { from, to } where either side may be '' (open-ended). Both empty → null.
+function formatDateRangeLabel(range) {
+  if (!range || (!range.from && !range.to)) return '';
+  if (range.from && range.to) return `${formatDateDMY(range.from)} to ${formatDateDMY(range.to)}`;
+  if (range.from) return `from ${formatDateDMY(range.from)}`;
+  return `until ${formatDateDMY(range.to)}`;
+}
+
+function tripDateInRange(tripId, range) {
+  if (!range || (!range.from && !range.to)) return true;
+  const d = getTripDateOnly(tripId);
+  if (!d) return false;
+  if (range.from && d < range.from) return false;
+  if (range.to   && d > range.to)   return false;
+  return true;
+}
+
 // ─── Data loading ─────────────────────────────────────────────────────────────
 async function loadMetadata() {
   const paths = [`${CONFIG.DATA_URL}trips_metadata.json`, './trips_metadata.json', 'trips_metadata.json'];
@@ -390,12 +407,14 @@ function resetSelection() {
     map.setPaintProperty('trips-layer', 'line-width', 3);
   }
 
-  const searchInput = document.getElementById('tripSearchInput');
-  const dateInput   = document.getElementById('tripDateFilter');
-  const clearBtn    = document.getElementById('tripClearButton');
-  if (searchInput) searchInput.value = '';
-  if (dateInput)   dateInput.value   = '';
-  if (clearBtn)    clearBtn.style.display = 'none';
+  const searchInput  = document.getElementById('tripSearchInput');
+  const dateFromInput = document.getElementById('tripDateFrom');
+  const dateToInput   = document.getElementById('tripDateTo');
+  const clearBtn     = document.getElementById('tripClearButton');
+  if (searchInput)   searchInput.value   = '';
+  if (dateFromInput) dateFromInput.value = '';
+  if (dateToInput)   dateToInput.value   = '';
+  if (clearBtn)       clearBtn.style.display = 'none';
 
   document.getElementById('selectedTripRow').style.display  = 'none';
   document.getElementById('statTripRow').style.display      = 'flex';
@@ -412,12 +431,14 @@ function clearSearch() {
   searchActive = false;
   selectedTrip = null;
   activeFilter = null;
-  const input    = document.getElementById('tripSearchInput');
-  const dateInput = document.getElementById('tripDateFilter');
-  const clearBtn = document.getElementById('tripClearButton');
-  if (input)    input.value = '';
-  if (dateInput) dateInput.value = '';
-  if (clearBtn) clearBtn.style.display = 'none';
+  const input        = document.getElementById('tripSearchInput');
+  const dateFromInput = document.getElementById('tripDateFrom');
+  const dateToInput   = document.getElementById('tripDateTo');
+  const clearBtn      = document.getElementById('tripClearButton');
+  if (input)          input.value          = '';
+  if (dateFromInput)  dateFromInput.value  = '';
+  if (dateToInput)    dateToInput.value    = '';
+  if (clearBtn)        clearBtn.style.display = 'none';
   if (currentPopup) { currentPopup.remove(); currentPopup = null; }
   applyTripFilter(null);
 
@@ -446,13 +467,14 @@ function showSelection(tripId) {
 
 function searchAndHighlightTrip(term, dateFilter) {
   const q = (term || '').toLowerCase().trim();
-  if (!q && !dateFilter) { resetSelection(); return; }
+  const hasDateFilter = !!(dateFilter && (dateFilter.from || dateFilter.to));
+  if (!q && !hasDateFilter) { resetSelection(); return; }
 
   let matches = tripIds;
-  if (q)          matches = matches.filter(id => id.toLowerCase().includes(q));
-  if (dateFilter) matches = matches.filter(id => getTripDateOnly(id) === dateFilter);
+  if (q)            matches = matches.filter(id => id.toLowerCase().includes(q));
+  if (hasDateFilter) matches = matches.filter(id => tripDateInRange(id, dateFilter));
 
-  const label = [term && term.trim(), dateFilter && formatDateDMY(dateFilter)].filter(Boolean).join(' on ');
+  const label = [term && term.trim(), hasDateFilter && formatDateRangeLabel(dateFilter)].filter(Boolean).join(' on ');
 
   if (matches.length === 0) {
     alert(`No trip found matching: ${label}`);
@@ -1069,20 +1091,25 @@ function setupControls() {
   const resetBtn = document.getElementById('resetButton');
   if (resetBtn) resetBtn.addEventListener('click', resetSelection);
 
-  const searchInput   = document.getElementById('tripSearchInput');
-  const dateInput     = document.getElementById('tripDateFilter');
-  const searchButton  = document.getElementById('tripSearchButton');
-  const suggestionBox = document.getElementById('searchSuggestions');
+  const searchInput    = document.getElementById('tripSearchInput');
+  const dateFromInput  = document.getElementById('tripDateFrom');
+  const dateToInput    = document.getElementById('tripDateTo');
+  const searchButton   = document.getElementById('tripSearchButton');
+  const suggestionBox  = document.getElementById('searchSuggestions');
 
   if (searchInput && searchButton && suggestionBox) {
-    function currentDate() { return dateInput ? dateInput.value : ''; }
-    function idsForDate(ids) { const d = currentDate(); return d ? ids.filter(id => getTripDateOnly(id) === d) : ids; }
+    function currentDateRange() {
+      const from = dateFromInput ? dateFromInput.value : '';
+      const to   = dateToInput   ? dateToInput.value   : '';
+      return (from || to) ? { from, to } : null;
+    }
+    function idsForDate(ids) { const r = currentDateRange(); return r ? ids.filter(id => tripDateInRange(id, r)) : ids; }
     function getSensorNames() { return [...new Set(idsForDate(tripIds).map(id => id.split('_')[0]))].sort(); }
     function hideSuggestions() { suggestionBox.style.display = 'none'; suggestionBox.innerHTML = ''; }
     function showSuggestions(query) {
       const q = query.trim().toLowerCase();
       suggestionBox.innerHTML = '';
-      if (!q && !currentDate()) { hideSuggestions(); return; }
+      if (!q && !currentDateRange()) { hideSuggestions(); return; }
       const pool    = idsForDate(tripIds);
       const sensors = getSensorNames().filter(s => !q || s.toLowerCase().startsWith(q));
       const trips   = pool.filter(id => (!q || id.toLowerCase().startsWith(q)) && !sensors.some(s => id.startsWith(s)));
@@ -1092,29 +1119,47 @@ function setupControls() {
         const li = document.createElement('li');
         li.textContent = `📡 ${sensor}  (${count} trip${count !== 1 ? 's' : ''})`;
         li.className = 'suggestion-sensor';
-        li.addEventListener('mousedown', () => { searchInput.value = sensor; hideSuggestions(); searchAndHighlightTrip(sensor, currentDate()); });
+        li.addEventListener('mousedown', () => { searchInput.value = sensor; hideSuggestions(); searchAndHighlightTrip(sensor, currentDateRange()); });
         suggestionBox.appendChild(li);
       });
       trips.forEach(tripId => {
         const li = document.createElement('li');
         li.textContent = `🚴 ${tripId}`;
         li.className = 'suggestion-trip';
-        li.addEventListener('mousedown', () => { searchInput.value = tripId; hideSuggestions(); searchAndHighlightTrip(tripId, currentDate()); });
+        li.addEventListener('mousedown', () => { searchInput.value = tripId; hideSuggestions(); searchAndHighlightTrip(tripId, currentDateRange()); });
         suggestionBox.appendChild(li);
       });
       suggestionBox.style.display = 'block';
     }
 
-    searchButton.addEventListener('click', () => { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDate()); });
+    searchButton.addEventListener('click', () => { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDateRange()); });
     const clearBtn = document.getElementById('tripClearButton');
     if (clearBtn) clearBtn.addEventListener('click', () => { hideSuggestions(); clearSearch(); });
-    searchInput.addEventListener('keypress', e => { if (e.key === 'Enter') { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDate()); } });
+    searchInput.addEventListener('keypress', e => { if (e.key === 'Enter') { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDateRange()); } });
     searchInput.addEventListener('input',  e => showSuggestions(e.target.value));
-    searchInput.addEventListener('focus',  e => { if (e.target.value || currentDate()) showSuggestions(e.target.value); });
+    searchInput.addEventListener('focus',  e => { if (e.target.value || currentDateRange()) showSuggestions(e.target.value); });
     searchInput.addEventListener('blur',   () => setTimeout(hideSuggestions, 150));
 
-    if (dateInput) {
-      dateInput.addEventListener('change', () => { hideSuggestions(); searchAndHighlightTrip(searchInput.value, currentDate()); });
+    // Keep from/to in sensible order — if the user picks a "from" date after
+    // the current "to" (or vice versa), nudge the other bound to match rather
+    // than silently returning zero results.
+    if (dateFromInput) {
+      dateFromInput.addEventListener('change', () => {
+        if (dateToInput && dateToInput.value && dateFromInput.value > dateToInput.value) {
+          dateToInput.value = dateFromInput.value;
+        }
+        hideSuggestions();
+        searchAndHighlightTrip(searchInput.value, currentDateRange());
+      });
+    }
+    if (dateToInput) {
+      dateToInput.addEventListener('change', () => {
+        if (dateFromInput && dateFromInput.value && dateToInput.value < dateFromInput.value) {
+          dateFromInput.value = dateToInput.value;
+        }
+        hideSuggestions();
+        searchAndHighlightTrip(searchInput.value, currentDateRange());
+      });
     }
   }
 
@@ -1226,11 +1271,14 @@ function renderSensorLegend() {
 
   legend.querySelectorAll('.sensor-legend-item').forEach(item => {
     item.addEventListener('click', () => {
-      const sensor    = item.dataset.sensor;
-      const input     = document.getElementById('tripSearchInput');
-      const dateInput = document.getElementById('tripDateFilter');
+      const sensor       = item.dataset.sensor;
+      const input        = document.getElementById('tripSearchInput');
+      const dateFromInput = document.getElementById('tripDateFrom');
+      const dateToInput   = document.getElementById('tripDateTo');
       if (input) input.value = sensor;
-      searchAndHighlightTrip(sensor, dateInput ? dateInput.value : '');
+      const from = dateFromInput ? dateFromInput.value : '';
+      const to   = dateToInput   ? dateToInput.value   : '';
+      searchAndHighlightTrip(sensor, (from || to) ? { from, to } : null);
     });
   });
 
