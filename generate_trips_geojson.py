@@ -254,6 +254,17 @@ CRASH_STALL_THRESHOLD_S    = 1.0
 CRASH_STOP_SEARCH_WINDOW_S = 3.0
 CRASH_SPEED_LOOKBACK_S     = 2.0
 
+# A single spike over threshold isn't enough on its own — cobblestone and
+# pothole jolts hit just as hard for one instant, then the signal snaps
+# right back into normal riding oscillation as the cyclist keeps going.
+# A real fall looks different afterward: the bike is down, so acc_y stops
+# oscillating and holds roughly flat for a stretch, instead of bouncing
+# back to the ~1g riding baseline. We require that stillness before we'll
+# call a spike a crash.
+CRASH_SETTLE_WINDOW_S      = CRASH_STOP_SEARCH_WINDOW_S  # how far past the spike to look for it
+CRASH_SETTLE_DURATION_S    = 1.0   # must hold flat for at least this long, contiguously
+CRASH_SETTLE_MAX_RANGE_G   = 1.0   # max (max-min) acc_y swing within that window to count as "flat"
+
 CRASH_SEVERITY_BANDS = [
     (6.0,  8.0,  "Minor"),
     (8.0,  11.0, "Hard"),
@@ -267,6 +278,30 @@ def _crash_severity(peak_g):
         if mag >= low and (high is None or mag < high):
             return label
     return "Minor"
+
+
+def _settles_after_impact(points, from_idx, n, t_diff):
+    """
+    True if, within CRASH_SETTLE_WINDOW_S samples after from_idx, acc_y
+    holds within a CRASH_SETTLE_MAX_RANGE_G band for at least
+    CRASH_SETTLE_DURATION_S straight. That flatness is the signature of a
+    bike lying still on the ground; a bump that the cyclist rode through
+    keeps oscillating and never holds still that long.
+    """
+    win_start = from_idx
+    k = from_idx
+    while k < n:
+        while win_start < k and t_diff(points[win_start], points[k]) > CRASH_SETTLE_DURATION_S:
+            win_start += 1
+        if t_diff(points[win_start], points[k]) >= CRASH_SETTLE_DURATION_S:
+            window = points[win_start:k + 1]
+            vals   = [p["acc_y"] for p in window]
+            if max(vals) - min(vals) <= CRASH_SETTLE_MAX_RANGE_G:
+                return True
+        if t_diff(points[from_idx], points[k]) > CRASH_SETTLE_WINDOW_S:
+            break
+        k += 1
+    return False
 
 
 def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
@@ -352,6 +387,14 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
 
             peak_idx = max(range(start, end + 1), key=lambda k: abs(points[k]["acc_y"]))
             peak_g = points[peak_idx]["acc_y"]
+
+            if not _settles_after_impact(points, end, n, t_diff):
+                # Spike hit hard but the signal bounced right back into
+                # normal riding oscillation — a bump the cyclist rode
+                # through, not a fall. Don't count it, and don't apply the
+                # crash cooldown either since nothing was actually detected.
+                i = end + 1
+                continue
 
             b_idx = start
             while b_idx > max(0, start - 25) and abs(points[b_idx]["acc_y"]) > 1.0:

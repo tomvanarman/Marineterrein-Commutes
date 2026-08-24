@@ -982,17 +982,32 @@ function updateStatsVisibility() {
 window.addEventListener('resize', updateStatsVisibility);
 
 function updateLegendPositions() {
-  const order   = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','brakingLegend','crashLegend','sensorLegend'];
-  const visible = order.map(id => document.getElementById(id)).filter(el => el && el.style.display === 'block');
-  const mobile  = window.matchMedia('(max-width: 768px)').matches;
+  // Sensors is pinned first (closest to the true screen edge) so it never
+  // drifts depending on which other legends happen to be open — everything
+  // else stacks relative to it, not the other way around.
+  const order         = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','brakingLegend','crashLegend'];
+  const sensorLegend  = document.getElementById('sensorLegend');
+  const sensorVisible = sensorLegend && sensorLegend.style.display === 'block';
+  const others        = order.map(id => document.getElementById(id)).filter(el => el && el.style.display === 'block');
+  const mobile        = window.matchMedia('(max-width: 768px)').matches;
   updateStatsVisibility();
 
   if (mobile) {
     let b = 10;
-    visible.forEach(el => { el.style.right = '10px'; el.style.bottom = `${b}px`; b += (el.offsetHeight || 150) + 8; });
+    if (sensorVisible) {
+      sensorLegend.style.right  = '10px';
+      sensorLegend.style.bottom = `${b}px`;
+      b += (sensorLegend.offsetHeight || 150) + 8;
+    }
+    others.forEach(el => { el.style.right = '10px'; el.style.bottom = `${b}px`; b += (el.offsetHeight || 150) + 8; });
   } else {
     let r = 10;
-    visible.forEach(el => { el.style.bottom = '10px'; el.style.right = `${r}px`; r += (el.offsetWidth || 220) + 10; });
+    if (sensorVisible) {
+      sensorLegend.style.bottom = '10px';
+      sensorLegend.style.right  = `${r}px`;
+      r += (sensorLegend.offsetWidth || 220) + 10;
+    }
+    others.forEach(el => { el.style.bottom = '10px'; el.style.right = `${r}px`; r += (el.offsetWidth || 220) + 10; });
   }
 }
 
