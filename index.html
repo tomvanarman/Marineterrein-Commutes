@@ -55,6 +55,17 @@
           Displays average cycling speed across recorded trips, supporting the
           identification of slow or fast corridors.
         </p>
+        <p>
+          Trips are recorded two ways: some are uploaded from the sensor's
+          own CSV export, others are fetched from the sensor via the API.
+          CSV trips measure speed directly from wheel rotation, which is
+          precise. API trips measure speed via GPS, which is inherently
+          noisier — especially between Amsterdam's tall buildings. To keep
+          the map readable, API-sourced trips are shown with a lightly
+          smoothed speed value on the line color only. Every number
+          elsewhere on the dashboard — trip stats, click-to-inspect speeds,
+          braking detection — always uses the raw, unsmoothed measurement.
+        </p>
         <h5>Road Quality</h5>
         <p>
           Based on third-party infrastructure data, categorised from "Perfect" to

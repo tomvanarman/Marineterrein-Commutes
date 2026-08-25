@@ -1,4 +1,4 @@
-# 🚴 Reflector Ride Maps
+# Reflector Ride Maps
 
 A bike sensor data visualization tool that transforms GPS and accelerometer data into interactive route maps with speed coloring, road quality analysis, and braking event detection.
 
@@ -133,7 +133,7 @@ Runs the full processing pipeline:
 
 **Step 2 — Calculate speeds and braking:**
 - Local CSV trips: wheel rotation (HRot) speed + real road quality from accelerometer + braking detection from speed deltas
-- API trips: GPS speed directly, road quality from accelerometer, no braking detection (wheel data unavailable)
+- API trips: GPS speed directly (smoothed separately for map color — see "Speed_display vs Speed" below), road quality from accelerometer, no braking detection (wheel data unavailable)
 
 **Step 3 — Average road segments:** Aggregates overlapping segments into per-road scores. Output: `road_segments_averaged.json`.
 
@@ -230,6 +230,16 @@ MAP_STYLE: '...'                // CartoDB Dark Matter
 BRAKING_DECEL_THRESHOLD_KMH_S = 5.0  # km/h lost per second; lower = more sensitive
 ```
 
+> ⚠️ Note: the manual panel in `index.html` currently describes this as "2 km/h per second" and the live value in `integrated_processor.py` is currently `40`. These three numbers disagree — worth reconciling to one source of truth.
+
+### GPS display smoothing (`integrated_processor.py`)
+
+```python
+GPS_SMOOTHING_WINDOW = 5  # points averaged for Speed_display on API/GPS trips only
+```
+
+Controls how smooth API-sourced trips look on the map. Higher = smoother color bands, less responsive to real speed changes. This only affects `Speed_display` (map color) — never `Speed` (raw value used for braking, stats, exports).
+
 ### Hotspot grid size (`generate_braking_hotspots.py`)
 
 ```python
@@ -244,10 +254,12 @@ DEFAULT_WHEEL_DIAMETER_MM = 711  # fallback if not in trip metadata
 
 ## Data quality notes
 
-| Source | Speed | Road Quality | Braking |
-|--------|-------|--------------|---------|
-| Local CSV (via pipeline) | Wheel rotation — accurate | Real — from accelerometer | ✅ Detected from speed deltas |
-| Supabase API | GPS — approximate | Real — from accelerometer | ❌ Not available (no wheel data) |
+| Source                    | Speed (raw, `Speed`)     | Speed (map color, `Speed_display`)    | Road Quality               | Braking                          |
+| -------------------------- | -------------------------- | -------------------------------------- | --------------------------- | --------------------------------- |
+| Local CSV (via pipeline)  | Wheel rotation — accurate  | Same as raw (already smooth)           | Real — from accelerometer   | ✅ Detected from speed deltas      |
+| Supabase API                | GPS — approximate, noisy   | Rolling-average smoothed for display   | Real — from accelerometer   | ❌ Not available (no wheel data)   |
+
+Every segment carries both `Speed` and `Speed_display`. `Speed` is always the raw computed value — this is what feeds braking detection, trip stats, and any export/analysis, and it is never altered for display purposes. `Speed_display` is what the map renders as line color; for local CSV trips the two are identical since wheel-rotation speed is already a physically integrated measurement.
 
 Local processed trips always take priority in `trips.geojson`.
 
@@ -270,6 +282,11 @@ Local processed trips always take priority in `trips.geojson`.
 ### "Speed shows 0 or capped at 40 for some trips"
 - These are API-sourced trips where GPS speed was null or low
 - Run the full pipeline to get wheel-rotation speed for those trips
+
+### "API trip colors look speckled/noisy compared to CSV trips"
+- Confirm `app.js` is coloring segments off `Speed_display`, not `Speed`. `Speed` is intentionally raw and will always look noisier for GPS-sourced trips — expected for analysis, just not for rendering.
+- If it's still noisy after that, raise `GPS_SMOOTHING_WINDOW` in `integrated_processor.py` and rerun the pipeline.
+- Reminder: this only ever affects the color-driving value. Braking events, trip stats, and exported speeds are always computed from raw `Speed`.
 
 ### "Trip skipped due to timeout"
 - The reconstruction query for that trip takes >30s
