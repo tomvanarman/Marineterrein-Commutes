@@ -55,6 +55,45 @@ MIN_SAMPLES_FOR_BRAKING = 5
 # Bigger window = smoother-looking color, less responsive to real speed changes.
 GPS_SMOOTHING_WINDOW = 5
 
+# ─── Crash / fall detection ──────────────────────────────────────────────────
+# A candidate impact becomes a confirmed crash when:
+#   Local/manual trip:
+#     1. |Acc Y| >= 6g
+#     2. acceleration settles after the impact
+#     3. wheel rotation remains stopped for at least 2 continuous seconds
+#        before resuming (or remains stopped for the rest of the trip)
+#
+#   API-rendered trip:
+#     1. |Acc Y| >= 6g
+#     2. acceleration settles after the impact
+#     3. GPS speed remains at/under the stop threshold for at least 2 seconds
+#        because reconstructed API trips do not reliably contain HRot.
+#
+# GPS speed is still used as additional corroboration on both paths.
+# The frontend receives only confirmed crash Point features (event_type='crash').
+
+CRASH_IMPACT_G = 6.0
+CRASH_SETTLE_G = 1.5
+CRASH_SETTLE_WINDOW_SAMPLES = 100       # 2.0s at 50 Hz
+CRASH_MIN_GAP_SAMPLES = 150             # ~3s to split separate impacts
+CRASH_SPEED_CONFIRM_KMH = 6.0           # corroborating post-impact speed ceiling
+
+# Local/manual CSV path: wheel must stop for at least 2 continuous seconds.
+CRASH_RESUME_HROT_TICKS = 4
+CRASH_MIN_STOP_GAP_SAMPLES = 100        # ~2.0s at 50 Hz
+
+# API/GPS path: with no reliable HRot, require near-zero GPS speed for 2 seconds.
+CRASH_API_STOP_SPEED_KMH = 1.5
+CRASH_API_STOP_WINDOW_SAMPLES = 100      # 2.0s at 50 Hz
+
+# Severity buckets for the map legend.
+CRASH_SEVERITY_MINOR_MAX_G = 8.0
+CRASH_SEVERITY_HARD_MAX_G = 11.0
+
+# Rebuild existing processed files so changes to crash logic cannot leave stale
+# crash markers in *_processed.geojson. Set False after validation if desired.
+REPROCESS_EXISTING = True
+
 assert MIN_SAMPLES_FOR_BRAKING == GPS_SMOOTHING_WINDOW, (
     "MIN_SAMPLES_FOR_BRAKING is meant to track GPS_SMOOTHING_WINDOW — "
     "update both together if you change one."
@@ -227,6 +266,212 @@ def extract_acceleration_data(features):
     return np.array(acc_y_values)
 
 
+def extract_gps_speed_data(features):
+    """Extract GPS speed in km/h from raw feature properties."""
+    speed_values = []
+    for feature in features:
+        raw = feature.get('properties', {}).get('Speed GPS')
+        if raw is None or raw == '':
+            speed_values.append(np.nan)
+        else:
+            try:
+                # Speed GPS is stored in m/s for API-rendered trips.
+                speed_values.append(float(raw) * 3.6)
+            except (ValueError, TypeError):
+                speed_values.append(np.nan)
+    return np.array(speed_values, dtype=float)
+
+
+def extract_hrot_data(features):
+    """Extract raw HRot Count for local/manual trips."""
+    return np.array([
+        safe_int(f.get('properties', {}).get('HRot Count'), 0)
+        for f in features
+    ], dtype=int)
+
+
+def _forward_fill(arr):
+    """Forward-fill NaNs while preserving leading NaNs."""
+    out = np.asarray(arr, dtype=float).copy()
+    last = np.nan
+    for i in range(len(out)):
+        if np.isnan(out[i]):
+            out[i] = last
+        else:
+            last = out[i]
+    return out
+
+
+def classify_crash_severity(peak_g):
+    """Classify peak absolute acceleration into the map's severity buckets."""
+    mag = abs(float(peak_g))
+    if mag < CRASH_SEVERITY_MINOR_MAX_G:
+        return 'Minor'
+    if mag < CRASH_SEVERITY_HARD_MAX_G:
+        return 'Hard'
+    return 'Severe'
+
+
+def analyze_crash_recovery(hrot_data, end_idx):
+    """
+    Local/manual trip recovery test.
+
+    A confirmed stop requires at least CRASH_MIN_STOP_GAP_SAMPLES samples
+    without enough HRot movement. If the wheel never resumes, it is marked
+    unresolved only after the full 2-second observation window is available.
+    """
+    if hrot_data is None or end_idx >= len(hrot_data):
+        return False, None, False
+
+    baseline = hrot_data[end_idx]
+    resume_idx = None
+
+    for idx in range(end_idx + 1, len(hrot_data)):
+        if hrot_data[idx] - baseline >= CRASH_RESUME_HROT_TICKS:
+            resume_idx = idx
+            break
+
+    if resume_idx is None:
+        stop_samples = len(hrot_data) - end_idx - 1
+        if stop_samples >= CRASH_MIN_STOP_GAP_SAMPLES:
+            return True, None, True
+        return False, None, False
+
+    gap = resume_idx - end_idx
+    if gap >= CRASH_MIN_STOP_GAP_SAMPLES:
+        return True, round(gap / SAMPLE_RATE_HZ, 1), False
+
+    return False, None, False
+
+
+def analyze_api_crash_recovery(speed_gps_data, end_idx):
+    """
+    API/GPS trip recovery test.
+
+    API-rendered trips do not reliably carry HRot, so require forward-filled
+    GPS speed to remain at/below the near-zero stop threshold for a full
+    2-second window. This is deliberately stricter than merely requiring
+    speed <= 6 km/h.
+    """
+    if speed_gps_data is None or end_idx >= len(speed_gps_data):
+        return False, None, False
+
+    speed_ffill = _forward_fill(speed_gps_data)
+    post_lo = end_idx + 1
+    post_hi = min(
+        len(speed_ffill),
+        post_lo + CRASH_API_STOP_WINDOW_SAMPLES
+    )
+    post = speed_ffill[post_lo:post_hi]
+
+    if len(post) < CRASH_API_STOP_WINDOW_SAMPLES:
+        return False, None, False
+
+    valid = post[~np.isnan(post)]
+    if len(valid) < CRASH_API_STOP_WINDOW_SAMPLES:
+        return False, None, False
+
+    if np.all(valid <= CRASH_API_STOP_SPEED_KMH):
+        # Find the first point in the post-impact sequence at which the
+        # 2-second stopped condition is satisfied.
+        return True, round(len(post) / SAMPLE_RATE_HZ, 1), False
+
+    return False, None, False
+
+
+def detect_crash_events(
+    acc_y_data,
+    speed_gps_data,
+    hrot_data=None,
+    use_gps_recovery=False,
+    impact_g=CRASH_IMPACT_G,
+    settle_g=CRASH_SETTLE_G,
+    settle_window=CRASH_SETTLE_WINDOW_SAMPLES,
+    min_gap=CRASH_MIN_GAP_SAMPLES,
+    speed_confirm_kmh=CRASH_SPEED_CONFIRM_KMH,
+):
+    """
+    Detect confirmed crash/fall events from raw per-sample data.
+
+    Local/manual trips use HRot to confirm a >=2s wheel stop.
+    API-rendered trips use a >=2s near-zero GPS-speed stop because HRot is
+    not reliably available in the reconstructed API data.
+
+    Confirmation requires:
+      - peak |Acc Y| >= impact_g
+      - accelerometer settles after the impact
+      - post-impact speed corroboration
+      - path-specific 2-second stop confirmation
+    """
+    n = len(acc_y_data)
+    if n == 0:
+        return []
+
+    flagged = np.where(np.abs(acc_y_data) >= impact_g)[0]
+    if len(flagged) == 0:
+        return []
+
+    events = []
+    start = flagged[0]
+    prev = flagged[0]
+
+    for idx in flagged[1:]:
+        if idx - prev > min_gap:
+            events.append((start, prev))
+            start = idx
+        prev = idx
+    events.append((start, prev))
+
+    speed_ffill = _forward_fill(speed_gps_data) if speed_gps_data is not None else None
+    results = []
+
+    for s, e in events:
+        seg = acc_y_data[s:e + 1]
+        peak_idx = s + int(np.argmax(np.abs(seg)))
+        peak_g = float(acc_y_data[peak_idx])
+
+        post_lo = e + 1
+        post_hi = min(n, post_lo + settle_window)
+        post = acc_y_data[post_lo:post_hi]
+        settled = len(post) == settle_window and np.nanstd(post) < settle_g
+
+        if speed_ffill is not None:
+            post_speed = speed_ffill[post_lo:post_hi]
+            valid = post_speed[~np.isnan(post_speed)]
+            speed_ok = (
+                len(valid) == 0 or
+                (valid <= speed_confirm_kmh).mean() >= 0.7
+            )
+        else:
+            speed_ok = True
+
+        if use_gps_recovery:
+            came_to_stop, recovery_time_s, unresolved = analyze_api_crash_recovery(
+                speed_gps_data, e
+            )
+        else:
+            came_to_stop, recovery_time_s, unresolved = analyze_crash_recovery(
+                hrot_data, e
+            )
+
+        confirmed = bool(settled and speed_ok and came_to_stop)
+
+        results.append({
+            'start_idx': int(s),
+            'end_idx': int(e),
+            'peak_idx': int(peak_idx),
+            'peak_g': round(peak_g, 2),
+            'settled': bool(settled),
+            'speed_low_after': bool(speed_ok),
+            'came_to_stop': bool(came_to_stop),
+            'recovery_time_s': recovery_time_s,
+            'unresolved': bool(unresolved),
+            'is_crash': confirmed,
+        })
+
+    return results
+
+
 def map_road_quality_to_segments(points, road_quality_data):
     """Map road quality scores to segments based on sample indices."""
     if road_quality_data is None:
@@ -343,6 +588,54 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         # Step 2: Extract acceleration data and calculate road quality
         print(f"  🛣️ Calculating road quality...")
         acc_y_data = extract_acceleration_data(features)
+
+        # Crash/fall detection runs on the raw feature stream before trimming
+        # and before speed segmentation, preserving full accelerometer resolution.
+        gps_speed_data = extract_gps_speed_data(features)
+        hrot_raw_data = extract_hrot_data(features)
+
+        crash_events_raw = detect_crash_events(
+            acc_y_data,
+            gps_speed_data,
+            hrot_raw_data,
+            use_gps_recovery=use_gps_speed,
+        )
+
+        confirmed_crashes = [e for e in crash_events_raw if e['is_crash']]
+
+        if confirmed_crashes:
+            print(
+                f"  🚨 Confirmed crash/fall events: {len(confirmed_crashes)} "
+                f"({'API/GPS stop logic' if use_gps_speed else 'wheel-stop logic'})"
+            )
+        elif crash_events_raw:
+            print(
+                f"  ℹ️ {len(crash_events_raw)} impact candidate(s) rejected by "
+                f"the strict crash confirmation rules"
+            )
+
+        crash_events_enriched = []
+        samples_seq = [
+            safe_int(f.get('properties', {}).get('Samples', 0), 0)
+            for f in features
+        ]
+
+        for event in confirmed_crashes:
+            suddenness_s = round(
+                (event['peak_idx'] - event['start_idx']) / SAMPLE_RATE_HZ,
+                2
+            )
+            crash_events_enriched.append({
+                'sample_start': samples_seq[event['start_idx']],
+                'sample_end': samples_seq[event['end_idx']],
+                'peak_g': event['peak_g'],
+                'severity': classify_crash_severity(event['peak_g']),
+                'suddenness_s': suddenness_s,
+                'came_to_stop': event['came_to_stop'],
+                'recovery_time_s': event['recovery_time_s'],
+                'unresolved': event['unresolved'],
+            })
+
         road_quality_data = None
         if len(acc_y_data) > 200:
             try:
@@ -549,6 +842,11 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                         'wheel_diameter_mm': wheel_diameter_mm,
                         'braking_intensity': braking_intensity,
                         'is_braking': braking_intensity >= BRAKING_DECEL_THRESHOLD_KMH_S,
+                        'is_crash': False,
+                        'crash_intensity_g': 0.0,
+                        'segment_start_sample': start_point['samples'],
+                        'segment_end_sample': end_point['samples'],
+                        'time_str': start_point['time_str'],
                     }
                 })
 
@@ -686,7 +984,65 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         if braking_count:
             print(f"  🛑 Braking events detected: {braking_count}")
 
-        return {'type': 'FeatureCollection', 'features': new_features}, file_metadata
+        # Tag output segments overlapping each confirmed crash and emit one
+        # standalone Point feature per crash for the map crash layer.
+        crash_point_features = []
+        tagged_crashes = 0
+
+        for crash in crash_events_enriched:
+            crash_start = crash['sample_start']
+            crash_end = crash['sample_end']
+            anchor_feat = None
+
+            for feat in new_features:
+                props = feat['properties']
+                seg_start = props.get('segment_start_sample')
+                seg_end = props.get('segment_end_sample')
+
+                if seg_start is None or seg_end is None:
+                    continue
+
+                if seg_start <= crash_end and seg_end >= crash_start:
+                    props['is_crash'] = True
+                    props['crash_intensity_g'] = crash['peak_g']
+                    if anchor_feat is None:
+                        anchor_feat = feat
+
+            if anchor_feat is not None:
+                tagged_crashes += 1
+                anchor_coords = anchor_feat['geometry']['coordinates'][0]
+                anchor_props = anchor_feat['properties']
+
+                crash_point_features.append({
+                    'type': 'Feature',
+                    'geometry': {
+                        'type': 'Point',
+                        'coordinates': anchor_coords
+                    },
+                    'properties': {
+                        'event_type': 'crash',
+                        'trip_id': trip_id,
+                        'severity': crash['severity'],
+                        'peak_g': crash['peak_g'],
+                        'suddenness_s': crash['suddenness_s'],
+                        'speed_at_impact_kmh': anchor_props.get('Speed', 0),
+                        'came_to_stop': crash['came_to_stop'],
+                        'recovery_time_s': crash['recovery_time_s'],
+                        'unresolved': crash['unresolved'],
+                        'time_str': anchor_props.get('time_str'),
+                    }
+                })
+
+        if tagged_crashes:
+            print(
+                f"  🚨 Crash events mapped onto {tagged_crashes} output crash range(s), "
+                f"{len(crash_point_features)} crash marker(s) emitted"
+            )
+
+        return {
+            'type': 'FeatureCollection',
+            'features': new_features + crash_point_features
+        }, file_metadata
 
     except Exception as e:
         import traceback
@@ -745,10 +1101,12 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
             sensor_output_dir = output_path / sensor_id
             output_file = sensor_output_dir / f"{trip_id}_processed.geojson"
 
-            if output_file.exists():
+            if output_file.exists() and not REPROCESS_EXISTING:
                 print(f"  ✓ {trip_id} already processed")
                 already_processed += 1
                 continue
+            elif output_file.exists() and REPROCESS_EXISTING:
+                print(f"  🔄 {trip_id} already processed — regenerating with current logic")
 
             print(f"  🔄 Processing {trip_id}...")
             debug = (idx == 0 and processed_files == 0)
