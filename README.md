@@ -22,7 +22,7 @@ Supabase DB ──────────────────────�
                                                             generate_braking_hotspots.py ──► braking_hotspots.json ──┘
 ```
 
-`generate_trips_geojson.py` merges both sources into one file. Local processed trips always take priority — they have real wheel-rotation speed, road quality, and braking data. Supabase trips fill in anything not already covered locally (GPS speed only, no braking).
+`generate_trips_geojson.py` merges both sources into one file. Local processed trips always take priority — they have wheel-rotation speed (more accurate than GPS) plus road quality and braking data. Supabase trips fill in anything not already covered locally (GPS-based speed and braking, road quality).
 
 ## Features
 
@@ -133,7 +133,7 @@ Runs the full processing pipeline:
 
 **Step 2 — Calculate speeds and braking:**
 - Local CSV trips: wheel rotation (HRot) speed + real road quality from accelerometer + braking detection from speed deltas
-- API trips: GPS speed directly (smoothed separately for map color — see "Speed_display vs Speed" below), road quality from accelerometer, no braking detection (wheel data unavailable)
+- API trips: GPS speed directly (smoothed separately for map color — see "Speed_display vs Speed" below), road quality from accelerometer, braking detection from GPS speed deltas (noisier than wheel-rotation, so segments too short to trust are excluded — see `MIN_SAMPLES_FOR_BRAKING`)
 
 **Step 3 — Average road segments:** Aggregates overlapping segments into per-road scores. Output: `road_segments_averaged.json`.
 
@@ -168,7 +168,9 @@ Reads `trips.geojson` and clusters braking events into ~35 m grid cells. Each ou
 - `trip_count` — how many distinct trips braked here
 - `severity` — Gentle / Firm / Hard / Emergency
 
-Only local CSV trips contribute braking data. Grid cell size is controlled by `CELL_DEG` in the script (default `0.0003` ≈ 35 m at Amsterdam latitude).
+Braking events from any trip — local CSV or Supabase API — contribute, since this script reads `is_braking`/`braking_intensity` directly off each segment's properties regardless of source. Grid cell size is controlled by `CELL_DEG` in the script (default `0.0003` ≈ 35 m at Amsterdam latitude).
+
+> Note: `MIN_INTENSITY` in `generate_braking_hotspots.py` is a second, independent copy of the braking threshold (currently `5.0`, matching `BRAKING_DECEL_THRESHOLD_KMH_S`) — it isn't read from `integrated_processor.py`, just kept in sync by hand. Update both together if you ever retune one.
 
 ## Web Visualization
 
@@ -230,7 +232,15 @@ MAP_STYLE: '...'                // CartoDB Dark Matter
 BRAKING_DECEL_THRESHOLD_KMH_S = 5.0  # km/h lost per second; lower = more sensitive
 ```
 
-> ⚠️ Note: the manual panel in `index.html` currently describes this as "2 km/h per second" and the live value in `integrated_processor.py` is currently `40`. These three numbers disagree — worth reconciling to one source of truth.
+The manual panel in `index.html` and the live value in `integrated_processor.py` are now aligned with this: both use 5.0 km/h/s.
+
+### GPS braking noise guard (`integrated_processor.py`)
+
+```python
+MIN_SAMPLES_FOR_BRAKING = 5  # tracks GPS_SMOOTHING_WINDOW — keep both in sync
+```
+
+Segments shorter than this many accelerometer samples (~0.1s) are excluded from braking detection on the GPS/API path. Point-to-point GPS speed readings that close together are dominated by position noise, not real motion — without this guard, ordinary jitter (e.g. a noisy 15→10 km/h reading 0.02s apart) reads as hundreds of km/h/s of deceleration and gets flagged as braking. This is the GPS-path equivalent of `MIN_HROT_FOR_BRAKING` on the CSV/wheel path.
 
 ### GPS display smoothing (`integrated_processor.py`)
 
@@ -257,7 +267,7 @@ DEFAULT_WHEEL_DIAMETER_MM = 711  # fallback if not in trip metadata
 | Source                    | Speed (raw, `Speed`)     | Speed (map color, `Speed_display`)    | Road Quality               | Braking                          |
 | -------------------------- | -------------------------- | -------------------------------------- | --------------------------- | --------------------------------- |
 | Local CSV (via pipeline)  | Wheel rotation — accurate  | Same as raw (already smooth)           | Real — from accelerometer   | ✅ Detected from speed deltas      |
-| Supabase API                | GPS — approximate, noisy   | Rolling-average smoothed for display   | Real — from accelerometer   | ❌ Not available (no wheel data)   |
+| Supabase API                | GPS — approximate, noisy   | Rolling-average smoothed for display   | Real — from accelerometer   | ✅ Detected from GPS speed deltas (short/noisy segments excluded) |
 
 Every segment carries both `Speed` and `Speed_display`. `Speed` is always the raw computed value — this is what feeds braking detection, trip stats, and any export/analysis, and it is never altered for display purposes. `Speed_display` is what the map renders as line color; for local CSV trips the two are identical since wheel-rotation speed is already a physically integrated measurement.
 
@@ -274,6 +284,11 @@ Local processed trips always take priority in `trips.geojson`.
   python generate_braking_hotspots.py
   ```
 - Confirm braking data is present: `is_braking` and `braking_intensity` should appear in processed file properties.
+
+### "Braking is flagged almost everywhere, especially on API/GPS trips"
+- This was a real bug: with `BRAKING_DECEL_THRESHOLD_KMH_S` set too high (was `40`) and no minimum-samples guard on the GPS path, single-sample GPS position jitter (~0.02s apart) was being misread as extreme deceleration and flagged as braking on nearly every segment.
+- Fixed by (1) setting the threshold back to `5.0`, matching real bike-braking physics, and (2) adding `MIN_SAMPLES_FOR_BRAKING` to reject segments too short to distinguish real braking from GPS noise (see Configuration above).
+- If you're still seeing this after pulling the latest `integrated_processor.py`, delete stale processed files and rerun the pipeline (see previous entry) — old output won't reflect the fix until reprocessed.
 
 ### "Map is blank"
 - Check that `trips.geojson` exists in the repo root and has been pushed

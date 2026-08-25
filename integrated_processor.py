@@ -15,7 +15,7 @@ OUTPUT_ROOT = "processed_sensor_data"
 
 # Braking detection: flag a segment when deceleration exceeds this threshold.
 # Units: km/h lost per second. 5 = firm intentional braking; lower = more sensitive.
-BRAKING_DECEL_THRESHOLD_KMH_S = 40
+BRAKING_DECEL_THRESHOLD_KMH_S = 5.0
 
 # Braking sanity caps
 # Hard ceiling on deceleration rate — anything above this is a data artefact.
@@ -35,6 +35,16 @@ MIN_SEGMENT_TIME_S = SECONDS_PER_SAMPLE  # 0.02 s
 # produces large apparent speed swings that are not real braking events.
 MIN_HROT_FOR_BRAKING = 2
 
+# Minimum accelerometer-sample span for a segment to be used in braking
+# detection (API/GPS path only — the equivalent of MIN_HROT_FOR_BRAKING above).
+# A single-sample segment (sample_diff=1, ~0.02s) is well below GPS update
+# resolution: point-to-point GPS jitter over that short a window produces
+# apparent decelerations of hundreds of km/h/s that are not real braking.
+# Set to match GPS_SMOOTHING_WINDOW (defined below) so the time base backing
+# a braking read is at least as wide as the window already used to smooth
+# GPS speed for display.
+MIN_SAMPLES_FOR_BRAKING = 5
+
 # ─── Display-only smoothing for API/GPS-sourced trips ───────────────────────
 # Raw point-to-point GPS speed is noisy (urban multipath, satellite geometry).
 # GPS_SMOOTHING_WINDOW controls a centered moving average over this many
@@ -44,6 +54,11 @@ MIN_HROT_FOR_BRAKING = 2
 # a physically-integrated measurement and don't need this smoothing.
 # Bigger window = smoother-looking color, less responsive to real speed changes.
 GPS_SMOOTHING_WINDOW = 5
+
+assert MIN_SAMPLES_FOR_BRAKING == GPS_SMOOTHING_WINDOW, (
+    "MIN_SAMPLES_FOR_BRAKING is meant to track GPS_SMOOTHING_WINDOW — "
+    "update both together if you change one."
+)
 
 SKIP_TRIPS = {
     "602CD": ["Trip1"],
@@ -452,8 +467,10 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
         if use_gps_speed:
             # ── API path: one segment per consecutive point pair, GPS speed ──────
             # hrot_diff is 0 for all API segments by design; braking is detected
-            # from GPS speed changes. The MIN_HROT_FOR_BRAKING guard is NOT applied
-            # here — it is a CSV-only safeguard against single-tick timing noise.
+            # from GPS speed changes. MIN_HROT_FOR_BRAKING itself doesn't apply
+            # here (it counts wheel ticks), but MIN_SAMPLES_FOR_BRAKING is its
+            # GPS-path equivalent: it rejects segments too short to distinguish
+            # real braking from point-to-point GPS jitter (see constant above).
             prev_speed_kmh = None
             for i in range(len(points) - 1):
                 start_point = points[i]
@@ -498,6 +515,8 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                     prev_speed_kmh is not None
                     and est_time_s is not None
                     and est_time_s >= MIN_SEGMENT_TIME_S
+                    and sample_diff is not None
+                    and sample_diff >= MIN_SAMPLES_FOR_BRAKING
                     and abs(speed_kmh - prev_speed_kmh) <= SPEED_JUMP_THRESHOLD_KMH
                 ):
                     braking_intensity = calculate_braking_intensity(

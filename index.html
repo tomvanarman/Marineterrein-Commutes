@@ -84,10 +84,12 @@
         <h5>Sudden Braking</h5>
         <p>
           Flags locations where a cyclist decelerated suddenly, accumulated across all
-          recorded trips. Braking is detected when a cyclist decelerates at more than 2 km/h per second— 
-          meaning speed drops by at least 2 km/h within a single one-second GPS interval.
-          This threshold was adjusted so as to distinguish genuine sudden braking (e.g. at 
+          recorded trips. Braking is detected when a cyclist decelerates at more than 5 km/h per second.
+          This threshold was chosen to distinguish genuine sudden braking (e.g. at
           intersections, obstacles, or unsafe road conditions) from normal slowdowns.
+          For GPS-sourced trips, brief segments (below a minimum time span) are excluded from
+          braking detection, since GPS position noise over very short windows can otherwise look
+          like extreme deceleration that never actually happened.
         </p>
         <h5>Crashes &amp; Falls</h5>
         <p>
