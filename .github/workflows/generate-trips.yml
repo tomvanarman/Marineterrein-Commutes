@@ -21,39 +21,57 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install psycopg2-binary python-dotenv numpy
+        run: pip install psycopg2-binary python-dotenv numpy geojson
 
-      - name: Generate trips.geojson
+      # Step 1: fetch any trips from Supabase not yet in trips_metadata.json,
+      # convert to clean GeoJSON. Skips already-fetched trips by design —
+      # raw sensor data can't change once a trip is over.
+      - name: Fetch + convert trips from Supabase
         env:
           SUPABASE_HOST:     ${{ secrets.SUPABASE_HOST }}
           SUPABASE_PORT:     ${{ secrets.SUPABASE_PORT }}
           SUPABASE_DB:       ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER:     ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+        run: python csv_to_geojson_converter.py --api
+
+      # Step 2: speed, road quality, braking, and crash detection. Only
+      # reprocesses a trip when its output is missing or PROCESSING_VERSION
+      # has changed since it was last generated (see processing_versions.json).
+      - name: Process speeds, road quality, braking, crash detection
+        run: python integrated_processor.py
+
+      - name: Average road segments
+        run: python road_averaging.py
+
+      - name: Generate trips.geojson
         run: python generate_trips_geojson.py
 
-      - name: Generate road_segments_averaged.json
-        run: python road_averaging.py
+      # Raw per-trip CSVs are pure intermediate data once _clean.geojson
+      # exists for that trip — drop them so the repo doesn't grow forever.
+      - name: Clean up raw CSVs
+        run: rm -rf csv_data/*
 
       - name: Commit and push if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add trips.geojson road_segments_averaged.json 
+          TRACKED_PATHS="trips.geojson road_segments_averaged.json sensor_data processed_sensor_data trips_metadata.json processing_versions.json"
 
-          # Only commit if any file actually changed
+          git add $TRACKED_PATHS
+
           if git diff --cached --quiet; then
             echo "No changes — skipping commit"
             exit 0
           fi
 
-          git commit -m "chore: regenerate trips.geojson + road_segments_averaged.json [skip ci]"
+          git commit -m "chore: regenerate trip data [skip ci]"
 
           # Pull latest remote changes, keep our freshly generated files
           git fetch origin main
           git checkout origin/main -- .
-          git checkout HEAD -- trips.geojson road_segments_averaged.json 
-          git add trips.geojson road_segments_averaged.json
-          git commit --allow-empty -m "chore: regenerate trips + road segments [skip ci]"
+          git checkout HEAD -- $TRACKED_PATHS
+          git add $TRACKED_PATHS
+          git commit --allow-empty -m "chore: regenerate trip data [skip ci]"
           git push origin HEAD:main
