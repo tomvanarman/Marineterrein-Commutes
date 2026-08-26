@@ -292,7 +292,7 @@ function formatDuration(s) {
 }
 
 function updateResetButtonVisibility() {
-  const active = showSpeedColors || showRoadQuality || showAveragedSegments || showBraking || searchActive || !!selectedTrip;
+  const active = showSpeedColors || showRoadQuality || showAveragedSegments || showBraking || showCrashes || searchActive || !!selectedTrip;
   document.getElementById('resetButton').style.display = active ? 'block' : 'none';
 }
 
@@ -697,6 +697,10 @@ function setupBrakingLayer(geojson, labelLayerId) {
 }
 
 // ─── Crash / fall events ────────────────────────────────────────────────────
+// Colour is a fixed channel: it always encodes impact intensity. Type is
+// encoded by glyph shape and outcome by a stroke ring (see setupCrashLayer) —
+// each dimension gets its own dedicated channel, all shown at once, with
+// nothing left to toggle or remap.
 function getCrashColorExpression() {
   return [
     'match', ['get', 'severity'],
@@ -707,80 +711,223 @@ function getCrashColorExpression() {
   ];
 }
 
+function getCrashTypeLabel(properties) {
+  if (properties.crash_type) return properties.crash_type;
+
+  const speed = Number(
+    properties.preimpact_speed_kmh ??
+    properties.speed_at_impact_kmh
+  );
+
+  if (!Number.isFinite(speed)) return 'Unclassified';
+  if (speed <= 1) return 'Stationary Fall';
+  if (speed <= 10) return 'Low-Speed Fall';
+  return 'High-Speed Fall';
+}
+
+function getCrashOutcomeLabel(properties) {
+  if (properties.crash_outcome) return properties.crash_outcome;
+
+  if (properties.unresolved === true || properties.unresolved === 'true') {
+    return 'Unresolved';
+  }
+
+  if (properties.came_to_stop === true || properties.came_to_stop === 'true') {
+    return 'Resolved';
+  }
+
+  return 'Unclassified';
+}
+
 function buildCrashFeatures(features) {
-  const crashFeatures = (features || []).filter(f => f.properties.event_type === 'crash');
-  console.log(`🚨 Found ${crashFeatures.length} crash/fall event(s)`);
+  const crashFeatures = (features || [])
+    .filter(f =>
+      f?.geometry?.type === 'Point' &&
+      f?.properties?.event_type === 'crash'
+    )
+    .map(f => ({
+      ...f,
+      properties: {
+        ...f.properties,
+        // Compute these once, here, so the circle's outcome ring, the
+        // symbol's type glyph, and the popup all read the same
+        // classification — previously they read crash_type/crash_outcome
+        // straight off the raw feature, which only worked when the source
+        // data already had those exact fields; otherwise every marker
+        // silently fell back to "Unclassified" regardless of its actual
+        // speed/outcome data.
+        crash_type: getCrashTypeLabel(f.properties || {}),
+        crash_outcome: getCrashOutcomeLabel(f.properties || {})
+      }
+    }));
+  console.log(`🚨 Found ${crashFeatures.length} crash marker(s)`);
+  if (crashFeatures.length > 0) {
+    console.log('🚨 Crash markers:', crashFeatures);
+  }
   return { type: 'FeatureCollection', features: crashFeatures };
 }
 
 function setupCrashLayer(geojson, labelLayerId) {
   const crashData = buildCrashFeatures(geojson.features || []);
 
-  map.addSource('crash-events', { type: 'geojson', data: crashData });
+  map.addSource('crash-events', {
+    type: 'geojson',
+    data: crashData
+  });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // CRASH CIRCLE (id kept as 'crash-events-halo' for compatibility with
+  // existing visibility toggles elsewhere in the file)
+  //
+  // Plain, solid, flat-filled circle — no blur/opacity trickery. Intensity
+  // (severity) is the fill colour. Outcome is a crisp white stroke ring:
+  // unresolved crashes get a solid white outline, resolved ones get none.
+  // ─────────────────────────────────────────────────────────────────────────
   map.addLayer({
     id: 'crash-events-halo',
     type: 'circle',
     source: 'crash-events',
-    layout: { visibility: 'none' },
-    paint: {
-      'circle-color': getCrashColorExpression(),
-      'circle-radius': [
-        'case', ['get', 'unresolved'],
-        ['interpolate', ['linear'], ['zoom'], 10, 22, 14, 34, 17, 48],
-        ['interpolate', ['linear'], ['zoom'], 10, 14, 14, 22, 17, 32],
-      ],
-      'circle-blur':            1.0,
-      'circle-opacity':         0.4,
-      'circle-pitch-alignment': 'map',
+    layout: {
+      visibility: 'none'
     },
+    paint: {
+      // Intensity = fill colour (same channel the legend shows).
+      'circle-color': getCrashColorExpression(),
+      'circle-opacity': 0.9,
+      'circle-blur': 0,
+
+      'circle-radius': [
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        10, 9,
+        14, 13,
+        17, 18
+      ],
+
+      // Outcome = a plain white outline ring, unresolved only.
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': [
+        'case',
+        ['==', ['get', 'crash_outcome'], 'Unresolved'],
+        3,
+        0
+      ],
+
+      'circle-pitch-alignment': 'map'
+    }
   }, labelLayerId);
 
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CRASH SYMBOL
+  //
+  // Type is represented by shape, drawn small and dark on top of the
+  // colour-coded circle (see above), so it reads as a glyph on a coloured
+  // chip rather than a second, competing colour channel:
+  //
+  //   Stationary Fall → ◆
+  //   Low-Speed Fall  → ▲
+  //   High-Speed Fall    → ●
+  //   Unclassified    → ■
+  // ─────────────────────────────────────────────────────────────────────────
   map.addLayer({
     id: 'crash-events-dot',
-    type: 'circle',
+    type: 'symbol',
     source: 'crash-events',
-    layout: { visibility: 'none' },
-    paint: {
-      'circle-color':        getCrashColorExpression(),
-      'circle-radius':       ['interpolate', ['linear'], ['zoom'], 10, 6, 14, 9, 17, 13],
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': 2,
-      'circle-opacity':         0.95,
-      'circle-pitch-alignment': 'map',
+    layout: {
+      visibility: 'none',
+
+      'text-field': [
+        'match',
+        ['get', 'crash_type'],
+
+        'Stationary Fall', '◆',
+        'Low-Speed Fall',  '▲',
+        'High-Speed Fall',    '●',
+        'Unclassified',    '■',
+
+        '■'
+      ],
+
+      'text-size': [
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        10, 9,
+        14, 13,
+        17, 18
+      ],
+      
+      'text-allow-overlap': true,
+      'text-ignore-placement': true
     },
+
+    paint: {
+      // Fixed dark glyph — colour is already carried by the circle beneath it.
+      'text-color': '#1a1a1a',
+
+      'text-halo-color': 'rgba(255,255,255,0.35)',
+      'text-halo-width': 0.4,
+
+      'text-opacity': 1
+    }
   }, labelLayerId);
 
-  map.on('click', 'crash-events-dot', (e) => {
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POPUP
+  //
+  // Bound to BOTH the circle ('crash-events-halo') and the glyph on top of
+  // it ('crash-events-dot'), since the glyph alone is a tiny hit target —
+  // most clicks on a bubble land on the circle, not the small symbol text.
+  // ─────────────────────────────────────────────────────────────────────────
+  function showCrashPopup(e) {
     e.preventDefault();
-    if (e.originalEvent) e.originalEvent.stopPropagation();
+    if (e.originalEvent) {
+      e.originalEvent.stopPropagation();
+    }
+
+    if (currentPopup) { currentPopup.remove(); }
+
     const p = e.features[0].properties;
 
     const speedLine = p.speed_at_impact_kmh != null
       ? `🚴 Speed at impact: ${p.speed_at_impact_kmh} km/h`
       : `🚴 Speed at impact: unknown`;
 
-    const recoveryLine = p.unresolved
-      ? `⚠️ <strong>Wheel didn't turn again for the rest of the trip</strong>`
-      : p.came_to_stop
-        ? `🧍 Came to a stop, moving again after ${p.recovery_time_s}s`
-        : `↪️ Kept moving — no stop detected nearby`;
+    const crashType = getCrashTypeLabel(p);
+    const crashOutcome = getCrashOutcomeLabel(p);
 
-    new mapboxgl.Popup()
+    const recoveryLine =
+      p.unresolved === true || p.unresolved === 'true'
+        ? `⚠️ <strong>Wheel didn't turn again for the rest of the trip</strong>`
+        : p.came_to_stop === true || p.came_to_stop === 'true'
+          ? `🧍 Came to a stop, moving again after ${p.recovery_time_s}s`
+          : `↪️ Kept moving — no stop detected nearby`;
+
+    currentPopup = new mapboxgl.Popup()
       .setLngLat(e.lngLat)
       .setHTML(`
         <strong>🚨 ${p.severity} Impact</strong><br>
         💥 Peak force: ${p.peak_g}g<br>
         ⚡ Onset: ${p.suddenness_s}s to peak<br>
+        🚲 Type: ${crashType}<br>
+        📍 Outcome: ${crashOutcome}<br>
         ${speedLine}<br>
         ${recoveryLine}<br>
         🕐 ${p.time_str || 'time unknown'} · trip ${p.trip_id}
       `)
       .addTo(map);
-  });
+  }
 
-  map.on('mouseenter', 'crash-events-dot', () => { map.getCanvas().style.cursor = 'pointer'; });
-  map.on('mouseleave', 'crash-events-dot', () => { map.getCanvas().style.cursor = ''; });
+  map.on('click', 'crash-events-halo', showCrashPopup);
+  map.on('click', 'crash-events-dot',  showCrashPopup);
+
+  map.on('mouseenter', 'crash-events-halo', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'crash-events-halo', () => { map.getCanvas().style.cursor = ''; });
+  map.on('mouseenter', 'crash-events-dot',  () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'crash-events-dot',  () => { map.getCanvas().style.cursor = ''; });
 
   console.log('✅ Crash/fall layer added');
 }
@@ -791,13 +938,29 @@ function setupCrashControls() {
 
   cb.addEventListener('change', (e) => {
     showCrashes = e.target.checked;
-    const legend     = document.getElementById('crashLegend');
+
+    const legend = document.getElementById('crashLegend');
     const visibility = showCrashes ? 'visible' : 'none';
 
-    if (map.getLayer('crash-events-halo')) map.setLayoutProperty('crash-events-halo', 'visibility', visibility);
-    if (map.getLayer('crash-events-dot'))  map.setLayoutProperty('crash-events-dot',  'visibility', visibility);
+    if (map.getLayer('crash-events-halo')) {
+      map.setLayoutProperty(
+        'crash-events-halo',
+        'visibility',
+        visibility
+      );
+    }
 
-    if (legend) legend.style.display = showCrashes ? 'block' : 'none';
+    if (map.getLayer('crash-events-dot')) {
+      map.setLayoutProperty(
+        'crash-events-dot',
+        'visibility',
+        visibility
+      );
+    }
+
+    if (legend) {
+      legend.style.display = showCrashes ? 'block' : 'none';
+    }
 
     updateResetButtonVisibility();
     setTimeout(updateLegendPositions, 50);
@@ -883,6 +1046,20 @@ map.on('load', async () => {
     }, labelLayerId);
 
     map.on('click', 'trips-layer', async (e) => {
+      // A crash bubble sits directly on top of its trip's line, and Mapbox
+      // fires each layer's click handler independently — so a click on a
+      // bubble can also match the route underneath it. When the crash
+      // layer is on, let the crash marker's own handler own that click
+      // (crash info) instead of showing route info here, and — just as
+      // importantly — don't set selectedTrip for it, so clicking off the
+      // popup afterwards doesn't reset the crash layer off along with it.
+      if (showCrashes) {
+        const crashHit = map.queryRenderedFeatures(e.point, {
+          layers: ['crash-events-halo', 'crash-events-dot']
+        });
+        if (crashHit.length > 0) return;
+      }
+
       e.preventDefault();
       if (e.originalEvent) e.originalEvent.stopPropagation();
       if (currentPopup) { currentPopup.remove(); }
@@ -952,6 +1129,7 @@ map.on('load', async () => {
     setupControls();
     updateStatsFromMetadata();
     renderSensorLegend();
+    renderCrashLegend();
     updateStatsVisibility();
 
   } catch (err) {
@@ -975,7 +1153,7 @@ map.on('load', async () => {
 });
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
-function isFilteredMode() { return showSpeedColors || showRoadQuality || showAveragedSegments || showBraking || searchActive; }
+function isFilteredMode() { return showSpeedColors || showRoadQuality || showAveragedSegments || showBraking || showCrashes || searchActive; }
 
 function updateStatsVisibility() {
   const statsEl = document.getElementById('stats');
@@ -992,10 +1170,23 @@ function updateLegendPositions() {
   // else stacks relative to it, not the other way around.
   const order         = ['averagedSegmentsLegend','speedLegend','roadQualityLegend','brakingLegend','crashLegend'];
   const sensorLegend  = document.getElementById('sensorLegend');
+  const crashLegend   = document.getElementById('crashLegend');
   const sensorVisible = sensorLegend && sensorLegend.style.display === 'block';
+  const crashVisible  = crashLegend && crashLegend.style.display === 'block';
   const others        = order.map(id => document.getElementById(id)).filter(el => el && el.style.display === 'block');
   const mobile        = window.matchMedia('(max-width: 768px)').matches;
   updateStatsVisibility();
+
+  // The crash legend's accordion is substantially taller than the other
+  // filter legends, so it always sits immediately next to the sensor
+  // legend (second position) instead of wherever it happens to fall in
+  // `order` — otherwise it can end up pushed out to the far edge whenever
+  // another legend is also active, which looks off given its height.
+  if (crashVisible) {
+    const idx = others.indexOf(crashLegend);
+    if (idx > -1) others.splice(idx, 1);
+    others.unshift(crashLegend);
+  }
 
   if (mobile) {
     let b = 10;
@@ -1249,6 +1440,87 @@ function setupControls() {
   const isoToggle = document.getElementById('isoToggle');
   if (isoToggle) isoToggle.addEventListener('change', e => updateIsochrone(e.target.checked));
 }
+
+// Crash / fall legend — three dimensions (intensity / classification /
+// outcome), each shown as a collapsible category. Tap a category to reveal
+// its sub-labels; only the relevant one needs to be open at a time, which
+// keeps the panel short instead of listing all three dimensions at once.
+const CRASH_LEGEND_CATEGORIES = [
+  {
+    id: 'intensity',
+    label: 'Intensity',
+    hint: 'Circle colour = impact severity',
+    rows: [
+      { swatch: `<div class="cl-swatch" style="background:#ffea00;"></div>`, label: 'Minor' },
+      { swatch: `<div class="cl-swatch" style="background:#ff9100;"></div>`, label: 'Hard' },
+      { swatch: `<div class="cl-swatch" style="background:#ff1744;"></div>`, label: 'Severe' },
+    ]
+  },
+  {
+    id: 'classification',
+    label: 'Classification',
+    hint: 'Symbol shape = type of event',
+    rows: [
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">◆</div>`, label: 'Stationary Fall' },
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">▲</div>`, label: 'Low-Speed Fall' },
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">●</div>`, label: 'High-Speed Fall' },
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">■</div>`, label: 'Unclassified' },
+    ]
+  },
+  {
+    id: 'outcome',
+    label: 'Outcome',
+    hint: 'White ring = rider did not recover',
+    rows: [
+      { swatch: `<div class="cl-swatch cl-swatch--outcome"></div>`, label: 'Resolved' },
+      { swatch: `<div class="cl-swatch cl-swatch--outcome unresolved"></div>`, label: 'Unresolved (white ring)' },
+    ]
+  },
+];
+
+function renderCrashLegend() {
+  const legend = document.getElementById('crashLegend');
+  if (!legend) return;
+
+  legend.innerHTML = `
+    <strong>CRASHES &amp; FALLS</strong>
+    <p class="cl-sub">Tap a category to see what its colours &amp; symbols mean.</p>
+    ${CRASH_LEGEND_CATEGORIES.map((cat, i) => `
+      <button type="button" class="cl-cat" data-cat="${cat.id}" aria-expanded="false">
+        <span class="cl-cat-name">${cat.label}</span>
+        <span class="cl-chevron">▶</span>
+      </button>
+      <div class="cl-panel" data-panel="${cat.id}" data-open="false">
+        <p class="cl-sub" style="margin:0 0 6px;">${cat.hint}</p>
+        ${cat.rows.map(r => `
+          <div class="cl-row">
+            ${r.swatch}
+            <span class="cl-row-label">${r.label}</span>
+          </div>
+        `).join('')}
+      </div>
+    `).join('')}
+  `;
+
+  // Accordion behaviour: opening one category closes the others so the
+  // panel stays short rather than growing with every click.
+  legend.querySelectorAll('.cl-cat').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const catId = btn.dataset.cat;
+      const isOpen = btn.getAttribute('aria-expanded') === 'true';
+
+      legend.querySelectorAll('.cl-cat').forEach(b => b.setAttribute('aria-expanded', 'false'));
+      legend.querySelectorAll('.cl-panel').forEach(p => p.setAttribute('data-open', 'false'));
+
+      if (!isOpen) {
+        btn.setAttribute('aria-expanded', 'true');
+        const panel = legend.querySelector(`.cl-panel[data-panel="${catId}"]`);
+        if (panel) panel.setAttribute('data-open', 'true');
+      }
+    });
+  });
+}
+
 
 function updateStatsFromMetadata() {
   const source      = map.getSource('trips');

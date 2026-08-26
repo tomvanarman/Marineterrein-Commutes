@@ -344,13 +344,11 @@
     <div class="speed-legend-item"><div class="speed-color-box" style="background:#9C27B0;"></div><span>20+ events</span></div>
   </div>
 
-  <!-- Crash / fall legend — severity only -->
+  <!-- Crash / fall legend — populated once by renderCrashLegend(); all three
+       dimensions (intensity/type/outcome) are shown at once, so there's no
+       mode to switch and no sub-blocks to toggle. -->
   <div class="legend" id="crashLegend" style="display:none;">
-    <strong>CRASHES &amp; FALLS</strong>
-    <p style="margin:4px 0 8px; font-size:0.75rem; opacity:0.8;">Colour = impact severity</p>
-    <div class="speed-legend-item"><div class="speed-color-box" style="background:#ffea00;"></div><span>Minor</span></div>
-    <div class="speed-legend-item"><div class="speed-color-box" style="background:#ff9100;"></div><span>Hard</span></div>
-    <div class="speed-legend-item"><div class="speed-color-box" style="background:#ff1744;"></div><span>Severe</span></div>
+    <!-- populated dynamically by renderCrashLegend() -->
   </div>
 
   <div class="legend" id="sensorLegend" style="display:none;">

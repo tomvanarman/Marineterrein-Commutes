@@ -459,66 +459,73 @@ def main(use_api=False):
     # ── Process all CSVs in csv_data/ ────────────────────────────────────────
     processed_any = False
 
-    for entry in os.listdir(INPUT_ROOT):
-        entry_path = os.path.join(INPUT_ROOT, entry)
+    # The write of all_metadata used to happen once per trip inside the loop
+    # below, rewriting the entire (growing) dict to disk on every iteration —
+    # so total I/O for a run grew roughly with the square of trip count. It's
+    # now written once after the loop instead. The try/finally still saves
+    # whatever was accumulated so far if something raises partway through,
+    # preserving the old crash-recovery behaviour without the per-trip cost.
+    try:
+        for entry in os.listdir(INPUT_ROOT):
+            entry_path = os.path.join(INPUT_ROOT, entry)
 
-        if os.path.isdir(entry_path):
-            csv_files = [os.path.join(entry_path, f)
-                         for f in os.listdir(entry_path) if f.lower().endswith(".csv")]
-        elif entry.lower().endswith(".csv"):
-            csv_files = [entry_path]
-        else:
-            continue
-
-        for input_file in csv_files:
-            file = os.path.basename(input_file)
-            first_segment = file.split("_")[0]
-
-            # API files are named API_<slug>_<date>.csv
-            if first_segment == "API":
-                sensor_id = file.split("_")[1]
+            if os.path.isdir(entry_path):
+                csv_files = [os.path.join(entry_path, f)
+                             for f in os.listdir(entry_path) if f.lower().endswith(".csv")]
+            elif entry.lower().endswith(".csv"):
+                csv_files = [entry_path]
             else:
-                sensor_id = first_segment[-5:]
+                continue
 
-            # ── Deduplication for local CSVs ──────────────────────────────────
-            # API trips were already deduplicated before writing; local CSVs
-            # use source_file as a secondary guard (cheap, avoids re-processing
-            # a file that was previously loaded locally).
-            if first_segment != "API":
-                already = any(
-                    v.get("source_file") == file
-                    for v in all_metadata.values()
-                )
-                if already:
-                    print(f"⏭️  {file} already in metadata — skipping.")
-                    continue
+            for input_file in csv_files:
+                file = os.path.basename(input_file)
+                first_segment = file.split("_")[0]
 
-            # ── Assign trip number ────────────────────────────────────────────
-            sensor_output = os.path.join(OUTPUT_ROOT, sensor_id)
-            os.makedirs(sensor_output, exist_ok=True)
-            trip_num = get_next_trip_number(sensor_output)
-            trip_id  = f"{sensor_id}_Trip{trip_num}"
+                # API files are named API_<slug>_<date>.csv
+                if first_segment == "API":
+                    sensor_id = file.split("_")[1]
+                else:
+                    sensor_id = first_segment[-5:]
 
-            # Pull pre-built API metadata if available
-            extra_meta = api_meta_by_file.get(file)
+                # ── Deduplication for local CSVs ──────────────────────────────────
+                # API trips were already deduplicated before writing; local CSVs
+                # use source_file as a secondary guard (cheap, avoids re-processing
+                # a file that was previously loaded locally).
+                if first_segment != "API":
+                    already = any(
+                        v.get("source_file") == file
+                        for v in all_metadata.values()
+                    )
+                    if already:
+                        print(f"⏭️  {file} already in metadata — skipping.")
+                        continue
 
-            features, metadata = process_csv(input_file, sensor_id, trip_num, extra_meta)
+                # ── Assign trip number ────────────────────────────────────────────
+                sensor_output = os.path.join(OUTPUT_ROOT, sensor_id)
+                os.makedirs(sensor_output, exist_ok=True)
+                trip_num = get_next_trip_number(sensor_output)
+                trip_id  = f"{sensor_id}_Trip{trip_num}"
 
-            geojson = {"type": "FeatureCollection", "features": features}
-            out_geojson = os.path.join(sensor_output, f"{trip_id}_clean.geojson")
-            with open(out_geojson, "w", encoding="utf-8") as f:
-                json.dump(geojson, f, indent=2)
+                # Pull pre-built API metadata if available
+                extra_meta = api_meta_by_file.get(file)
 
-            trip_metadata = {"source_file": file}
-            trip_metadata.update(metadata)
-            all_metadata[trip_id] = trip_metadata
+                features, metadata = process_csv(input_file, sensor_id, trip_num, extra_meta)
 
-            with open(metadata_index_file, "w", encoding="utf-8") as f:
-                json.dump(all_metadata, f, indent=2)
+                geojson = {"type": "FeatureCollection", "features": features}
+                out_geojson = os.path.join(sensor_output, f"{trip_id}_clean.geojson")
+                with open(out_geojson, "w", encoding="utf-8") as f:
+                    json.dump(geojson, f, indent=2)
 
-            source_label = "🌐 API" if (extra_meta or {}).get("source") == "api" else "📄 CSV"
-            print(f"✅ {source_label} {file} → {trip_id}_clean.geojson in {sensor_output}")
-            processed_any = True
+                trip_metadata = {"source_file": file}
+                trip_metadata.update(metadata)
+                all_metadata[trip_id] = trip_metadata
+
+                source_label = "🌐 API" if (extra_meta or {}).get("source") == "api" else "📄 CSV"
+                print(f"✅ {source_label} {file} → {trip_id}_clean.geojson in {sensor_output}")
+                processed_any = True
+    finally:
+        with open(metadata_index_file, "w", encoding="utf-8") as f:
+            json.dump(all_metadata, f, indent=2)
 
     if not processed_any:
         print("ℹ️  Nothing new to process.")

@@ -90,6 +90,10 @@ CRASH_API_STOP_WINDOW_SAMPLES = 100      # 2.0s at 50 Hz
 CRASH_SEVERITY_MINOR_MAX_G = 8.0
 CRASH_SEVERITY_HARD_MAX_G = 11.0
 
+# Crash type buckets, keyed off estimated pre-impact speed (km/h).
+CRASH_STATIONARY_MAX_KMH = 1.0      # <= this -> Stationary Fall
+CRASH_LOW_SPEED_MAX_KMH = 10.0      # >1 to <=10 -> Low-Speed Fall; >10 -> Moving Crash
+
 # Rebuild existing processed files so changes to crash logic cannot leave stale
 # crash markers in *_processed.geojson. Set False after validation if desired.
 REPROCESS_EXISTING = True
@@ -310,6 +314,92 @@ def classify_crash_severity(peak_g):
     if mag < CRASH_SEVERITY_HARD_MAX_G:
         return 'Hard'
     return 'Severe'
+
+
+def classify_crash_type(preimpact_speed_kmh):
+    """Classify an incident by how fast the bike was moving immediately before impact."""
+    if preimpact_speed_kmh is None or np.isnan(preimpact_speed_kmh):
+        return 'Unclassified'
+    if preimpact_speed_kmh <= CRASH_STATIONARY_MAX_KMH:
+        return 'Stationary Fall'
+    if preimpact_speed_kmh <= CRASH_LOW_SPEED_MAX_KMH:
+        return 'Low-Speed Fall'
+    return 'Moving Crash'
+
+
+def classify_crash_outcome(unresolved, came_to_stop, recovery_time_s):
+    """Classify the post-impact outcome independently from crash type."""
+    if unresolved:
+        return 'Unresolved'
+    if came_to_stop and recovery_time_s is not None:
+        return 'Resolved'
+    return 'Unclassified'
+
+
+def estimate_preimpact_wheel_speed(hrot_data, samples_seq, peak_idx, wheel_circumference_m):
+    """Estimate wheel speed over the ~1 second immediately before the impact peak.
+
+    Local/manual (CSV) path: derives speed from wheel rotation ticks, since
+    that data is a physically-integrated measurement and doesn't need GPS.
+    """
+    if len(hrot_data) == 0 or peak_idx <= 0 or not samples_seq or peak_idx >= len(samples_seq):
+        return None
+
+    peak_sample = samples_seq[peak_idx]
+    target_sample = peak_sample - int(SAMPLE_RATE_HZ)
+    prior_idx = None
+    for idx in range(peak_idx - 1, -1, -1):
+        if samples_seq[idx] <= target_sample:
+            prior_idx = idx
+            break
+    if prior_idx is None:
+        prior_idx = 0
+
+    sample_diff = samples_seq[peak_idx] - samples_seq[prior_idx]
+    if sample_diff <= 0:
+        return None
+
+    hrot_diff = hrot_data[peak_idx] - hrot_data[prior_idx]
+    if hrot_diff <= 0:
+        return 0.0
+
+    time_s = sample_diff * SECONDS_PER_SAMPLE
+    if time_s <= 0:
+        return None
+
+    revolutions = hrot_diff / 2.0
+    distance_m = revolutions * wheel_circumference_m
+    speed_kmh = (distance_m / time_s) * 3.6
+    return round(min(speed_kmh, 40.0), 1)
+
+
+def estimate_preimpact_gps_speed(gps_speed_data, samples_seq, peak_idx):
+    """GPS-based equivalent of estimate_preimpact_wheel_speed, for API trips.
+
+    API-rendered trips have no reliable HRot, so instead of deriving speed
+    from wheel ticks this averages the raw GPS speed (already in km/h) over
+    the same ~1 second window immediately before the impact peak.
+    """
+    if gps_speed_data is None or len(gps_speed_data) == 0 or peak_idx <= 0 \
+            or not samples_seq or peak_idx >= len(samples_seq):
+        return None
+
+    peak_sample = samples_seq[peak_idx]
+    target_sample = peak_sample - int(SAMPLE_RATE_HZ)
+    prior_idx = None
+    for idx in range(peak_idx - 1, -1, -1):
+        if samples_seq[idx] <= target_sample:
+            prior_idx = idx
+            break
+    if prior_idx is None:
+        prior_idx = 0
+
+    window = np.asarray(gps_speed_data[prior_idx:peak_idx + 1], dtype=float)
+    valid = window[~np.isnan(window)]
+    if len(valid) == 0:
+        return None
+
+    return round(min(float(np.mean(valid)), 40.0), 1)
 
 
 def analyze_crash_recovery(hrot_data, end_idx):
@@ -625,15 +715,37 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 (event['peak_idx'] - event['start_idx']) / SAMPLE_RATE_HZ,
                 2
             )
+            came_to_stop = event['came_to_stop']
+            recovery_time_s = event['recovery_time_s']
+            unresolved = event['unresolved']
+
+            # Pre-impact speed: wheel-tick based for local/CSV trips, GPS-average
+            # based for API trips (no reliable HRot there — see the function's
+            # docstring for why this can't just reuse the wheel-speed estimator).
+            if use_gps_speed:
+                preimpact_speed_kmh = estimate_preimpact_gps_speed(
+                    gps_speed_data, samples_seq, event['peak_idx']
+                )
+            else:
+                preimpact_speed_kmh = estimate_preimpact_wheel_speed(
+                    hrot_raw_data, samples_seq, event['peak_idx'], wheel_circumference_m
+                )
+
+            crash_type = classify_crash_type(preimpact_speed_kmh)
+            crash_outcome = classify_crash_outcome(unresolved, came_to_stop, recovery_time_s)
+
             crash_events_enriched.append({
                 'sample_start': samples_seq[event['start_idx']],
                 'sample_end': samples_seq[event['end_idx']],
                 'peak_g': event['peak_g'],
                 'severity': classify_crash_severity(event['peak_g']),
                 'suddenness_s': suddenness_s,
-                'came_to_stop': event['came_to_stop'],
-                'recovery_time_s': event['recovery_time_s'],
-                'unresolved': event['unresolved'],
+                'came_to_stop': came_to_stop,
+                'recovery_time_s': recovery_time_s,
+                'unresolved': unresolved,
+                'preimpact_speed_kmh': preimpact_speed_kmh,
+                'crash_type': crash_type,
+                'crash_outcome': crash_outcome,
             })
 
         road_quality_data = None
@@ -735,8 +847,35 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 end_trim_index = k
                 break
 
-        if start_trim_index < end_trim_index:
-            points = points[start_trim_index:end_trim_index]
+        # A confirmed crash whose sample range falls inside a would-be-trimmed
+        # zone loses its anchor once that zone is cut — new_features (below)
+        # only comes from surviving points, and a crash marker with no
+        # overlapping segment is silently dropped, not just fuzzed. Skip the
+        # trim on whichever end has a crash in it, so the crash keeps its
+        # real location instead of disappearing. This does mean that end's
+        # true GPS points are kept (not privacy-trimmed) whenever a crash
+        # lands there — a deliberate trade of location privacy for crash
+        # visibility on that specific trip end.
+        crash_in_start_zone = any(
+            c['sample_start'] < points[start_trim_index]['samples']
+            for c in crash_events_enriched
+        ) if start_trim_index < len(points) else False
+
+        crash_in_end_zone = any(
+            c['sample_end'] > points[end_trim_index]['samples']
+            for c in crash_events_enriched
+        ) if end_trim_index < len(points) else False
+
+        effective_start_trim_index = 0 if crash_in_start_zone else start_trim_index
+        effective_end_trim_index = (len(points) - 1) if crash_in_end_zone else end_trim_index
+
+        if crash_in_start_zone:
+            print(f"  ⚠️ Crash within first {TRIM_DISTANCE_METRES}m — keeping full start so it isn't lost")
+        if crash_in_end_zone:
+            print(f"  ⚠️ Crash within last {TRIM_DISTANCE_METRES}m — keeping full end so it isn't lost")
+
+        if effective_start_trim_index < effective_end_trim_index:
+            points = points[effective_start_trim_index:effective_end_trim_index]
             print(f"  ✂️ Trimmed: Start {TRIM_DISTANCE_METRES}m, End {TRIM_DISTANCE_METRES}m")
             print(f"  Remaining points: {len(points)}")
         else:
@@ -1005,6 +1144,8 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 if seg_start <= crash_end and seg_end >= crash_start:
                     props['is_crash'] = True
                     props['crash_intensity_g'] = crash['peak_g']
+                    props['crash_type'] = crash['crash_type']
+                    props['crash_outcome'] = crash['crash_outcome']
                     if anchor_feat is None:
                         anchor_feat = feat
 
@@ -1029,6 +1170,8 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                         'came_to_stop': crash['came_to_stop'],
                         'recovery_time_s': crash['recovery_time_s'],
                         'unresolved': crash['unresolved'],
+                        'crash_type': crash['crash_type'],
+                        'crash_outcome': crash['crash_outcome'],
                         'time_str': anchor_props.get('time_str'),
                     }
                 })

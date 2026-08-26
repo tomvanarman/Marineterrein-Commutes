@@ -466,6 +466,119 @@ input[type="range"] {
   display: none;
 }
 
+/* ── Crash & Falls legend — accordion ─────────────────────────────────────
+   Three dimensions (Intensity / Classification / Outcome), each collapsed
+   behind a tap so the panel stays short instead of listing everything at
+   once. Falls back to the shared .legend sizing/positioning above; this
+   just adds the accordion + scroll behaviour and matches the existing
+   panel theme (cyan accents, Rajdhani labels, dim panel borders).
+   ────────────────────────────────────────────────────────────────────── */
+#crashLegend {
+  max-height: 320px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#crashLegend::-webkit-scrollbar { width: 6px; }
+#crashLegend::-webkit-scrollbar-track { background: transparent; }
+#crashLegend::-webkit-scrollbar-thumb {
+  background: var(--sc-panel-border);
+  border-radius: 3px;
+}
+
+#crashLegend .cl-sub {
+  margin: 0 0 10px 0;
+  font-size: 11px;
+  color: var(--sc-text-dim);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+#crashLegend .cl-cat {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--sc-panel-border);
+  border-radius: 4px;
+  padding: 7px 9px;
+  margin-top: 6px;
+  color: var(--sc-text-bright);
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+#crashLegend .cl-cat:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+#crashLegend .cl-cat-name { flex: 1; }
+
+#crashLegend .cl-chevron {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--sc-cyan);
+  transition: transform 0.15s ease;
+}
+
+#crashLegend .cl-cat[aria-expanded="true"] .cl-chevron {
+  transform: rotate(90deg);
+}
+
+#crashLegend .cl-panel {
+  display: none;
+  padding: 8px 2px 2px 4px;
+}
+
+#crashLegend .cl-panel[data-open="true"] { display: block; }
+
+#crashLegend .cl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 5px 0;
+  font-size: 12px;
+}
+
+#crashLegend .cl-row-label {
+  flex: 1;
+  color: var(--sc-text);
+  font-family: 'Rajdhani', sans-serif;
+}
+
+#crashLegend .cl-swatch {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+#crashLegend .cl-swatch--glyph {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--sc-text-bright);
+  font-size: 10px;
+  line-height: 1;
+}
+
+#crashLegend .cl-swatch--outcome {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+#crashLegend .cl-swatch--outcome.unresolved {
+  border: 3px solid #fff;
+  background: rgba(0, 0, 0, 0.5);
+}
+
 /* Stats Panel */
 #stats {
   position: absolute;

@@ -682,6 +682,57 @@ def load_local_processed():
     print(f"✅ Local: {len(features)} segments from {len(trip_ids)} trips")
     return features, trip_ids
 
+# ── Step 1b: load whatever trips.geojson already has, so previously-fetched
+#             API trips aren't silently re-queried and re-processed forever ──
+
+def load_existing_output(local_trip_ids):
+    """Read the current OUTPUT_FILE (if any) and split its features into:
+      - cached_remote_features: features belonging to trips NOT covered by
+        local_trip_ids — i.e. genuinely API-fetched trips already processed
+        on a prior run. These are carried forward untouched.
+      - cached_remote_trip_ids: the trip_ids of those features, added to the
+        skip-set passed to load_remote_trips so they aren't re-fetched.
+
+    Previously, OUTPUT_FILE was only ever written, never read back — so
+    every API-fetched trip was fully re-queried and re-processed from raw
+    Supabase data (including the heavy per-trip RAW_QUERY that decodes raw
+    accelerometer blobs row by row) on every single scheduled run, forever.
+    With a handful of trips that's invisible; with hundreds or thousands the
+    job's runtime grows linearly forever and eventually blows through
+    GitHub Actions' time limit or the DB's STATEMENT_TIMEOUT.
+
+    Any feature whose trip_id happens to also be in local_trip_ids is
+    dropped here rather than carried forward — local (CSV) processing is
+    the higher-quality source for that trip and will regenerate it fresh
+    via load_local_processed(), so keeping the old copy would just create
+    a stale duplicate.
+    """
+    path = Path(OUTPUT_FILE)
+    if not path.exists():
+        return [], set()
+
+    try:
+        data = json.loads(path.read_text())
+    except Exception as e:
+        print(f"  ⚠️  Could not read existing {OUTPUT_FILE}: {e} — starting fresh")
+        return [], set()
+
+    cached_remote_features = [
+        f for f in data.get("features", [])
+        if f.get("properties", {}).get("trip_id") not in local_trip_ids
+    ]
+    cached_remote_trip_ids = {
+        f["properties"]["trip_id"]
+        for f in cached_remote_features
+        if f.get("properties", {}).get("trip_id")
+    }
+
+    print(
+        f"📦 Existing {OUTPUT_FILE}: {len(cached_remote_features)} segment(s) "
+        f"from {len(cached_remote_trip_ids)} already-processed API trip(s) — will skip re-fetching them"
+    )
+    return cached_remote_features, cached_remote_trip_ids
+
 # ── Step 2: fetch new trips from Supabase ─────────────────────────────────────
 
 def load_remote_trips(existing_trip_ids):
@@ -756,8 +807,12 @@ def load_remote_trips(existing_trip_ids):
 
 def main():
     local_features, local_trip_ids = load_local_processed()
-    remote_features = load_remote_trips(local_trip_ids)
-    all_features = local_features + remote_features
+
+    cached_remote_features, cached_remote_trip_ids = load_existing_output(local_trip_ids)
+    existing_trip_ids = local_trip_ids | cached_remote_trip_ids
+
+    remote_features = load_remote_trips(existing_trip_ids)
+    all_features = local_features + cached_remote_features + remote_features
 
     geojson = {"type": "FeatureCollection", "features": all_features}
     with open(OUTPUT_FILE, "w") as f:
@@ -767,7 +822,8 @@ def main():
     print(f"\n✅ Written {OUTPUT_FILE}")
     print(f"   Local trips  : {len(local_trip_ids)}")
     remote_ids = set(f['properties']['trip_id'] for f in remote_features)
-    print(f"   Remote trips : {len(remote_ids)}")
+    print(f"   Newly-fetched remote trips : {len(remote_ids)}")
+    print(f"   Carried-forward remote trips : {len(cached_remote_trip_ids)}")
     print(f"   Total segments: {len(all_features)} ({size_kb:.0f} KB)")
 
     # Braking summary
