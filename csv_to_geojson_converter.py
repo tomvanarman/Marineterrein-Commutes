@@ -202,9 +202,14 @@ def fetch_trips_from_supabase(all_metadata):
         print(f"  ⬇️  Fetching trip {trip_id} ({trip_start} → {trip_end})…")
 
         # ── 2. Reconstruct rows ──────────────────────────────────────────────
-        cur.execute(RECONSTRUCTION_QUERY.format(trip_id=trip_id))
-        rows = cur.fetchall()
-        col_names = [desc[0] for desc in cur.description]
+        try:
+            cur.execute(RECONSTRUCTION_QUERY.format(trip_id=trip_id))
+            rows = cur.fetchall()
+            col_names = [desc[0] for desc in cur.description]
+        except Exception as e:
+            print(f"     ❌ Failed trip {trip_id}: {e}")
+            conn.rollback()
+            continue
 
         if not rows:
             print(f"     ⚠️  No data rows returned — skipping.")
