@@ -94,9 +94,49 @@ CRASH_SEVERITY_HARD_MAX_G = 11.0
 CRASH_STATIONARY_MAX_KMH = 1.0      # <= this -> Stationary Fall
 CRASH_LOW_SPEED_MAX_KMH = 10.0      # >1 to <=10 -> Low-Speed Fall; >10 -> Moving Crash
 
-# Rebuild existing processed files so changes to crash logic cannot leave stale
-# crash markers in *_processed.geojson. Set False after validation if desired.
-REPROCESS_EXISTING = True
+# ─── Processing-version cache invalidation ────────────────────────────────────
+# A trip's *_processed.geojson is only regenerated when this version differs
+# from the version recorded for it in PROCESSING_VERSION_FILE (below). Bump
+# PROCESSING_VERSION any time crash detection, braking detection, road-quality
+# mapping, or any other logic in process_geojson_file() changes — that forces
+# exactly one full reprocess of every trip on the next run, after which only
+# newly-fetched trips are processed until the version changes again.
+#
+# This replaces blindly reprocessing everything every run (correct, but
+# throws away all caching and gets slower forever) and blindly skipping
+# anything already on disk (fast, but silently freezes trips at whatever
+# logic produced them — the bug that let a simulated crash go undetected
+# because the trip predated crash detection and was never recognised as
+# stale).
+PROCESSING_VERSION = 2
+PROCESSING_VERSION_FILE = Path("processing_versions.json")
+
+# Manual escape hatch: set True to force a full rebuild regardless of version
+# (e.g. to sanity-check current logic against everything on disk). Leave False
+# normally — bump PROCESSING_VERSION instead, so the rebuild is tracked and
+# only happens once.
+FORCE_REPROCESS_ALL = False
+
+
+def load_processing_versions():
+    """Load {trip_id: version} map of the processing version each trip was
+    last generated with."""
+    if PROCESSING_VERSION_FILE.exists():
+        try:
+            with open(PROCESSING_VERSION_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️ Could not load {PROCESSING_VERSION_FILE.name}: {e}")
+    return {}
+
+
+def save_processing_versions(versions):
+    """Persist {trip_id: version} map."""
+    try:
+        with open(PROCESSING_VERSION_FILE, 'w') as f:
+            json.dump(versions, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save {PROCESSING_VERSION_FILE.name}: {e}")
 
 assert MIN_SAMPLES_FOR_BRAKING == GPS_SMOOTHING_WINDOW, (
     "MIN_SAMPLES_FOR_BRAKING is meant to track GPS_SMOOTHING_WINDOW — "
@@ -1206,12 +1246,15 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
         return
 
     saved_metadata = load_metadata()
+    processing_versions = load_processing_versions()
 
     print("\n🚴 Processing Bike Trip Data with Road Quality")
     print("=" * 60)
     print(f"📂 Input: {input_path}")
     print(f"📂 Output: {output_path}")
     print(f"⚠️ NOTE: Metadata file is managed by csv_to_geojson_converter.py")
+    print(f"🏷️  Processing version: {PROCESSING_VERSION}"
+          + (" (FORCE_REPROCESS_ALL is on — ignoring cache)" if FORCE_REPROCESS_ALL else ""))
 
     total_files = 0
     processed_files = 0
@@ -1220,7 +1263,15 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
     failed_files = 0
     total_segments = 0
 
-    for folder in sorted(input_path.iterdir()):
+    # processing_versions is only written once after the full loop (in the
+    # finally below), not per-trip — writing the whole (growing) dict after
+    # every trip would make total I/O for a run scale with the square of
+    # trip count, same issue already fixed for trips_metadata.json. The
+    # finally still persists whatever was accumulated so far if something
+    # raises partway through, so a crash mid-run doesn't lose already-done
+    # work on the next attempt.
+    try:
+      for folder in sorted(input_path.iterdir()):
         if not folder.is_dir():
             continue
 
@@ -1244,12 +1295,23 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
             sensor_output_dir = output_path / sensor_id
             output_file = sensor_output_dir / f"{trip_id}_processed.geojson"
 
-            if output_file.exists() and not REPROCESS_EXISTING:
-                print(f"  ✓ {trip_id} already processed")
+            cached_version = processing_versions.get(trip_id)
+            up_to_date = (
+                output_file.exists()
+                and cached_version == PROCESSING_VERSION
+                and not FORCE_REPROCESS_ALL
+            )
+
+            if up_to_date:
+                print(f"  ✓ {trip_id} already processed (v{PROCESSING_VERSION})")
                 already_processed += 1
                 continue
-            elif output_file.exists() and REPROCESS_EXISTING:
-                print(f"  🔄 {trip_id} already processed — regenerating with current logic")
+            elif output_file.exists():
+                reason = "FORCE_REPROCESS_ALL is on" if FORCE_REPROCESS_ALL else (
+                    f"stale: v{cached_version} → v{PROCESSING_VERSION}"
+                    if cached_version is not None else "no version recorded"
+                )
+                print(f"  🔄 {trip_id} already processed — regenerating ({reason})")
 
             print(f"  🔄 Processing {trip_id}...")
             debug = (idx == 0 and processed_files == 0)
@@ -1264,12 +1326,15 @@ def process_all_trips(input_dir=INPUT_ROOT, output_dir=OUTPUT_ROOT):
                 num_segments = len(processed_data['features'])
                 total_segments += num_segments
                 processed_files += 1
+                processing_versions[trip_id] = PROCESSING_VERSION
                 print(f"  ✅ {num_segments} segments created")
             else:
                 failed_files += 1
                 print(f"  ❌ Failed to process")
 
         print(f"  ✅ Sensor complete\n")
+    finally:
+        save_processing_versions(processing_versions)
 
     print("=" * 60)
     print(f"✅ Processing complete!")
