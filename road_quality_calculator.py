@@ -66,7 +66,7 @@ class RoadQualityCalculator:
 
         
 
-        for i in range(0, n_samples - window_size, step_size):
+        for i in range(0, n_samples - window_size + 1, step_size):
 
             window_data = acc_y_data[i:i + window_size]
 

@@ -48,6 +48,47 @@ INITIAL_DAYS       = None   # None = all trips; set e.g. 90 to limit
 STATEMENT_TIMEOUT  = "30s"
 SPEED_SMOOTH_WIN   = 5      # rolling average window for gnss speed
 
+# ── Output trimming (trips.geojson is committed to git and served directly
+# by GitHub Pages, so it must stay under GitHub's 100MB hard limit) ─────────
+# Only these properties are read anywhere in app.js (verified by grepping
+# for each property name against app.js) — everything else on a segment
+# feature (marker, hrot_diff, sample_diff, original_speed, wheel_diameter_mm,
+# is_crash, crash_intensity_g, segment_start_sample, segment_end_sample) is
+# either a processing-intermediate value or an always-0 placeholder on the
+# API path, and never reaches the map. Dropping them cut the file roughly in
+# half. If you add a property the frontend needs, add it here too, or it
+# will be silently stripped before trips.geojson is written.
+SEGMENT_PROPS_TO_KEEP = {
+    "trip_id", "Speed", "Speed_display", "road_quality",
+    "time_diff_s", "gps_distance_m", "braking_intensity",
+    "is_braking", "time_str",
+}
+# 6 decimal places ≈ 11cm — below GPS's own ~1-3m accuracy floor, so this
+# loses no real precision. Going lower (5dp ≈ 1.1m, 4dp ≈ 11m) was tested
+# and saved under 3% more for real accuracy loss — not worth it.
+COORD_PRECISION = 6
+
+# Crash Point features use a different property schema entirely (severity,
+# peak_g, crash_type, etc.) and are rare — they're left untouched rather
+# than run through SEGMENT_PROPS_TO_KEEP, which would strip fields the
+# crash popup in app.js actually needs.
+def trim_feature(f):
+    props = f.get("properties", {})
+    if props.get("event_type") == "crash":
+        return f
+    geom = f["geometry"]
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": geom["type"],
+            "coordinates": [
+                [round(c[0], COORD_PRECISION), round(c[1], COORD_PRECISION)]
+                for c in geom["coordinates"]
+            ],
+        },
+        "properties": {k: v for k, v in props.items() if k in SEGMENT_PROPS_TO_KEEP},
+    }
+
 # Braking detection — CSV/wheel-rotation trips (high precision)
 BRAKING_DECEL_THRESHOLD_KMH_S = 40   # km/h per second; only flag genuine hard braking
 BRAKING_INTENSITY_CAP_KMH_S   = 50   # hard ceiling to suppress data artefacts
@@ -812,7 +853,10 @@ def main():
     existing_trip_ids = local_trip_ids | cached_remote_trip_ids
 
     remote_features = load_remote_trips(existing_trip_ids)
-    all_features = local_features + cached_remote_features + remote_features
+    all_features = [
+        trim_feature(f)
+        for f in (local_features + cached_remote_features + remote_features)
+    ]
 
     geojson = {"type": "FeatureCollection", "features": all_features}
     with open(OUTPUT_FILE, "w") as f:

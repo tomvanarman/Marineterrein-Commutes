@@ -26,6 +26,8 @@ jobs:
       # Step 1: fetch any trips from Supabase not yet in trips_metadata.json,
       # convert to clean GeoJSON. Skips already-fetched trips by design —
       # raw sensor data can't change once a trip is over.
+      # sensor_data/ is rebuilt fresh here every run — it is NOT persisted
+      # between runs. Only newly-fetched trips will ever be present.
       - name: Fetch + convert trips from Supabase
         env:
           SUPABASE_HOST:     ${{ secrets.SUPABASE_HOST }}
@@ -38,12 +40,18 @@ jobs:
       # Step 2: speed, road quality, braking, and crash detection. Only
       # reprocesses a trip when its output is missing or PROCESSING_VERSION
       # has changed since it was last generated (see processing_versions.json).
+      # processed_sensor_data/ is also ephemeral — only this run's newly
+      # fetched trips get processed here, old trips are untouched.
       - name: Process speeds, road quality, braking, crash detection
         run: python integrated_processor.py
 
       - name: Average road segments
         run: python road_averaging.py
 
+      # generate_trips_geojson.py's load_existing_output carries forward
+      # every previously-committed trip's features from trips.geojson itself,
+      # so old trips survive even though sensor_data/processed_sensor_data
+      # for them no longer exist on disk this run.
       - name: Generate trips.geojson
         run: python generate_trips_geojson.py
 
@@ -57,7 +65,12 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          TRACKED_PATHS="trips.geojson road_segments_averaged.json sensor_data processed_sensor_data trips_metadata.json processing_versions.json"
+          # sensor_data and processed_sensor_data are intentionally NOT
+          # tracked — they're ephemeral per-run scratch space now. Only
+          # trips_metadata.json (what's been fetched) and
+          # processing_versions.json (what's been processed) persist,
+          # since those are small and are what make the skip-logic work.
+          TRACKED_PATHS="trips.geojson road_segments_averaged.json trips_metadata.json processing_versions.json"
 
           git add $TRACKED_PATHS
 

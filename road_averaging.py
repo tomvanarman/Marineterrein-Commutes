@@ -18,6 +18,14 @@ from pathlib import Path
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
+# Shared by are_segments_similar's matching logic and merge_segments' spatial
+# grid sizing (below) — both must agree on the same distance threshold, or
+# the grid could skip candidate pairs that are_segments_similar would
+# otherwise have matched.
+DISTANCE_THRESHOLD_M = 50
+BEARING_THRESHOLD_DEG = 15
+
+
 def haversine_distance(lon1, lat1, lon2, lat2):
     """Calculate distance between two points in meters."""
     R = 6_371_000
@@ -40,7 +48,8 @@ def calculate_bearing(lon1, lat1, lon2, lat2):
 
 
 def are_segments_similar(coord1a, coord1b, coord2a, coord2b,
-                          distance_threshold=50, bearing_threshold=15):
+                          distance_threshold=DISTANCE_THRESHOLD_M,
+                          bearing_threshold=BEARING_THRESHOLD_DEG):
     """Return True if two segments share a similar midpoint and bearing."""
     mid1_lon = (coord1a[0] + coord1b[0]) / 2
     mid1_lat = (coord1a[1] + coord1b[1]) / 2
@@ -59,9 +68,50 @@ def are_segments_similar(coord1a, coord1b, coord2a, coord2b,
 
 
 def merge_segments(segments_list):
-    """Merge spatially similar segments into consolidated ones."""
+    """
+    Merge spatially similar segments into consolidated ones.
+
+    Segments are first bucketed into a spatial grid (cell size ==
+    DISTANCE_THRESHOLD_M) keyed on each segment's midpoint. are_segments_similar
+    only ever returns True for segments whose midpoints are within
+    DISTANCE_THRESHOLD_M of each other, so a segment's match can only ever
+    land in its own grid cell or one of the 8 adjacent cells — checking that
+    3x3 neighborhood instead of every other segment in the dataset finds
+    exactly the same matches as the original full pairwise scan, just without
+    the wasted comparisons against segments that were never going to match.
+
+    This replaces an O(n^2) nested loop that took ~80 minutes at this
+    dataset's current size (~205k segments) and would only get worse as
+    trips.geojson grows every run. Grid bucketing brings it down to
+    effectively O(n) — each segment is compared only against the handful of
+    others that share its neighborhood, not the whole dataset.
+    """
     if not segments_list:
         return []
+
+    # Longitude degrees compress toward the poles; latitude degrees don't.
+    # A single reference latitude is accurate enough here since the whole
+    # dataset covers one small city area (Marineterrein Amsterdam) — using
+    # each segment's own latitude would give a marginally tighter grid but
+    # isn't needed at this geographic scale.
+    METERS_PER_DEG_LAT = 111_320
+    ref_lat_rad = math.radians(segments_list[0]['coords'][0][1])
+    meters_per_deg_lon = METERS_PER_DEG_LAT * math.cos(ref_lat_rad)
+
+    lat_cell_deg = DISTANCE_THRESHOLD_M / METERS_PER_DEG_LAT
+    lon_cell_deg = DISTANCE_THRESHOLD_M / meters_per_deg_lon
+
+    def midpoint(seg):
+        (lon1, lat1), (lon2, lat2) = seg['coords']
+        return (lon1 + lon2) / 2, (lat1 + lat2) / 2
+
+    def cell_key(lon, lat):
+        return (int(lat // lat_cell_deg), int(lon // lon_cell_deg))
+
+    grid = {}
+    for idx, seg in enumerate(segments_list):
+        lon, lat = midpoint(seg)
+        grid.setdefault(cell_key(lon, lat), []).append(idx)
 
     merged = []
     used   = set()
@@ -72,9 +122,18 @@ def merge_segments(segments_list):
         group = [seg1]
         used.add(i)
 
-        for j, seg2 in enumerate(segments_list):
+        lon, lat = midpoint(seg1)
+        cell_lat, cell_lon = cell_key(lon, lat)
+
+        candidates = []
+        for dlat in (-1, 0, 1):
+            for dlon in (-1, 0, 1):
+                candidates.extend(grid.get((cell_lat + dlat, cell_lon + dlon), []))
+
+        for j in candidates:
             if j in used or j <= i:
                 continue
+            seg2 = segments_list[j]
             if are_segments_similar(
                 seg1['coords'][0], seg1['coords'][1],
                 seg2['coords'][0], seg2['coords'][1],

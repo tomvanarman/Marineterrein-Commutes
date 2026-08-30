@@ -1,7 +1,6 @@
 import csv
 import json
 import os
-import re
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
@@ -363,14 +362,21 @@ def extract_row_timestamp(row):
 # Trip numbering (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_next_trip_number(sensor_id_folder):
-    """Find the next available trip number inside a sensor_data/{sensor_id} folder."""
-    if not os.path.exists(sensor_id_folder):
-        return 1
+def get_next_trip_number(all_metadata, sensor_id):
+    """
+    Find the next available trip number for sensor_id, derived from
+    trips_metadata.json (all_metadata) rather than the sensor_data/{sensor_id}
+    folder on disk. sensor_data/ is ephemeral (rebuilt fresh each CI run) and
+    no longer a reliable record of which trip numbers already exist —
+    trips_metadata.json is the persisted source of truth, so this must read
+    from it instead of os.listdir(), or trip numbering restarts at 1 every
+    run and collides with/overwrites existing trip_ids.
+    """
+    prefix = f"{sensor_id}_Trip"
     existing = [
-        int(m.group(1))
-        for f in os.listdir(sensor_id_folder)
-        if (m := re.match(r".*_Trip(\d+)_clean\.geojson", f))
+        int(trip_id[len(prefix):])
+        for trip_id in all_metadata
+        if trip_id.startswith(prefix) and trip_id[len(prefix):].isdigit()
     ]
     return max(existing, default=0) + 1
 
@@ -546,7 +552,7 @@ def main(use_api=False):
                 # ── Assign trip number ────────────────────────────────────────────
                 sensor_output = os.path.join(OUTPUT_ROOT, sensor_id)
                 os.makedirs(sensor_output, exist_ok=True)
-                trip_num = get_next_trip_number(sensor_output)
+                trip_num = get_next_trip_number(all_metadata, sensor_id)
                 trip_id  = f"{sensor_id}_Trip{trip_num}"
 
                 # Pull pre-built API metadata if available
