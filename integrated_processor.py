@@ -85,6 +85,15 @@ CRASH_MIN_STOP_GAP_SAMPLES = 100        # ~2.0s at 50 Hz
 # API/GPS path: with no reliable HRot, require near-zero GPS speed for 2 seconds.
 CRASH_API_STOP_SPEED_KMH = 1.5
 CRASH_API_STOP_WINDOW_SAMPLES = 100      # 2.0s at 50 Hz
+# Raw (unsmoothed) GPS speed is noisy point-to-point (multipath, satellite
+# geometry drift) — see GPS_SMOOTHING_WINDOW notes below. Requiring literally
+# every sample in the 2s window to sit under CRASH_API_STOP_SPEED_KMH means a
+# single noisy blip (bike genuinely stationary, GPS misreads 2-3 km/h for one
+# sample) fails the whole window and a real crash never confirms. This was
+# the actual cause of simulated API-path crashes going undetected — the gate
+# was too strict for the sensor, not too lenient. Require a large majority of
+# samples under threshold instead of literally all of them.
+CRASH_API_STOP_FRACTION = 0.9
 
 # Severity buckets for the map legend.
 CRASH_SEVERITY_MINOR_MAX_G = 8.0
@@ -108,7 +117,11 @@ CRASH_LOW_SPEED_MAX_KMH = 10.0      # >1 to <=10 -> Low-Speed Fall; >10 -> Movin
 # logic produced them — the bug that let a simulated crash go undetected
 # because the trip predated crash detection and was never recognised as
 # stale).
-PROCESSING_VERSION = 2
+#
+# Bumped 2 -> 3 here because CRASH_API_STOP_FRACTION changes which API-path
+# trips confirm as crashes; every previously-processed trip needs one more
+# pass under the relaxed gate to pick up crashes that were wrongly rejected.
+PROCESSING_VERSION = 3
 PROCESSING_VERSION_FILE = Path("processing_versions.json")
 
 # Manual escape hatch: set True to force a full rebuild regardless of version
@@ -479,9 +492,19 @@ def analyze_api_crash_recovery(speed_gps_data, end_idx):
     API/GPS trip recovery test.
 
     API-rendered trips do not reliably carry HRot, so require forward-filled
-    GPS speed to remain at/below the near-zero stop threshold for a full
-    2-second window. This is deliberately stricter than merely requiring
-    speed <= 6 km/h.
+    GPS speed to stay at/below the near-zero stop threshold for a full
+    2-second window.
+
+    Previously this required np.all(valid <= CRASH_API_STOP_SPEED_KMH) —
+    every single sample in the window under threshold. Raw point-to-point
+    GPS speed is noisy (multipath, satellite geometry), so a bike that is
+    genuinely stationary can still produce one or two samples reading
+    2-3 km/h. That single noisy sample failed the whole 2-second window and
+    silently killed real crash confirmations on the API path — this is what
+    was hiding the simulated crash. Require a large majority of samples
+    (CRASH_API_STOP_FRACTION) under threshold instead of literally all of
+    them, which tolerates isolated GPS noise without loosening the gate
+    enough to confirm a bike that's actually still moving.
     """
     if speed_gps_data is None or end_idx >= len(speed_gps_data):
         return False, None, False
@@ -501,9 +524,8 @@ def analyze_api_crash_recovery(speed_gps_data, end_idx):
     if len(valid) < CRASH_API_STOP_WINDOW_SAMPLES:
         return False, None, False
 
-    if np.all(valid <= CRASH_API_STOP_SPEED_KMH):
-        # Find the first point in the post-impact sequence at which the
-        # 2-second stopped condition is satisfied.
+    stopped_fraction = (valid <= CRASH_API_STOP_SPEED_KMH).mean()
+    if stopped_fraction >= CRASH_API_STOP_FRACTION:
         return True, round(len(post) / SAMPLE_RATE_HZ, 1), False
 
     return False, None, False
@@ -743,6 +765,17 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                 f"  ℹ️ {len(crash_events_raw)} impact candidate(s) rejected by "
                 f"the strict crash confirmation rules"
             )
+            # Per-candidate breakdown so a rejected crash (e.g. the simulated
+            # one that motivated CRASH_API_STOP_FRACTION) can be diagnosed
+            # from run output instead of just seeing a count.
+            for cand in crash_events_raw:
+                print(
+                    f"    · peak={cand['peak_g']}g settled={cand['settled']} "
+                    f"speed_ok={cand['speed_low_after']} "
+                    f"came_to_stop={cand['came_to_stop']} "
+                    f"unresolved={cand['unresolved']} "
+                    f"(sample {cand['start_idx']}-{cand['end_idx']})"
+                )
 
         crash_events_enriched = []
         samples_seq = [
