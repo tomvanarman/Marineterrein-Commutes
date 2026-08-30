@@ -77,22 +77,32 @@ x_filtered as (
     where x.output_samples >= mb.start_sample
       and x.output_samples <= mb.end_sample
 ),
+-- d1_filtered: was 4 separate correlated scalar subqueries per output row
+-- (marker, hrot, speed, timestamp), each independently re-scanning data1 with
+-- its own WHERE trip_id/samples/marker filter and LIMIT 1. That's 4x the
+-- scans it needs to be. DISTINCT ON collapses to one row per (trip_id,
+-- samples) up front — same "pick one, arbitrarily" semantics as the original
+-- LIMIT 1s — and the join below reads all four columns from a single pass.
+-- Needs an index on data1(trip_id, samples) to stay cheap; without one this
+-- is still a full scan, just one instead of four.
+d1_filtered as (
+    select distinct on (d1.trip_id, d1.samples)
+        d1.trip_id, d1.samples, d1.marker, d1.h_rot, d1.speed, d1."timestamp"
+    from public.data1 d1
+    where d1.trip_id = (select trip_id from params)
+      and d1.marker != 1 and d1.marker != 3
+    order by d1.trip_id, d1.samples
+),
 base as (
     select
         x.*,
-        (select d1.marker from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as marker,
-        (select d1.h_rot from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as hrot,
-        (select d1.speed from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as speed,
-        (select d1."timestamp" from public.data1 d1
-         where d1.trip_id = x.trip_id and d1.samples = x.output_samples
-           and d1.marker != 1 and d1.marker != 3 limit 1) as d1_ts
+        d1f.marker        as marker,
+        d1f.h_rot         as hrot,
+        d1f.speed         as speed,
+        d1f."timestamp"   as d1_ts
     from x_filtered x
+    left join d1_filtered d1f
+      on d1f.trip_id = x.trip_id and d1f.samples = x.output_samples
 )
 select
     g.latitude                          as latitude,
@@ -116,12 +126,40 @@ select
     to_char(b.d1_ts at time zone 'Europe/Amsterdam', 'HH24:MI:SS') as "HH:mm:ss",
     to_char(b.d1_ts, 'MS')             as "SSS"
 from base b
+-- Nearest-GNSS-timestamp lookup, rewritten to be index-friendly.
+-- The original ordered every gnss row for the whole trip by
+-- abs(epoch diff) for EVERY output row — O(rows x gnss_rows), and Postgres
+-- can't use a btree index for that ordering at all. This uses the standard
+-- nearest-neighbour trick instead: one index scan forward from d1_ts, one
+-- scan backward from d1_ts, each LIMIT 1, then pick whichever of those two
+-- candidates is closer. Needs an index on gnss(trip_id, "timestamp") — the
+-- two inner scans become simple index range scans instead of a full sort of
+-- every gnss row per output row, which is what was blowing up on long trips.
 left join lateral (
-    select g.latitude, g.longitude, g.heading, g.speed,
-           g.accuracy, g.altitude, g."timestamp"
-    from public.gnss g
-    where g.trip_id = b.trip_id and b.d1_ts is not null
-    order by abs(extract(epoch from (g."timestamp" - b.d1_ts)))
+    select * from (
+        (
+            select g.latitude, g.longitude, g.heading, g.speed,
+                   g.accuracy, g.altitude, g."timestamp"
+            from public.gnss g
+            where g.trip_id = b.trip_id
+              and b.d1_ts is not null
+              and g."timestamp" >= b.d1_ts
+            order by g."timestamp" asc
+            limit 1
+        )
+        union all
+        (
+            select g.latitude, g.longitude, g.heading, g.speed,
+                   g.accuracy, g.altitude, g."timestamp"
+            from public.gnss g
+            where g.trip_id = b.trip_id
+              and b.d1_ts is not null
+              and g."timestamp" < b.d1_ts
+            order by g."timestamp" desc
+            limit 1
+        )
+    ) candidates
+    order by abs(extract(epoch from (candidates."timestamp" - b.d1_ts)))
     limit 1
 ) g on true
 order by b.raw_samples, b.output_samples;
