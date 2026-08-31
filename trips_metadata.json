@@ -700,5 +700,623 @@
     "Trip start/end": ", 2026-04-13 15:29:02.909000+00:00, 2026-04-13 15:36:25.086000+00:00",
     "source": "api",
     "supabase_trip_id": 233
+  },
+  "602DE_Trip28": {
+    "source_file": "API_602DE_20260506_185025.csv",
+    "Trip start/end": ", 2026-05-06 18:50:25.892000+00:00, 2026-05-06 18:59:24.309000+00:00",
+    "source": "api",
+    "supabase_trip_id": 513
+  },
+  "604F0_Trip22": {
+    "source_file": "API_604F0_20260514_154924.csv",
+    "Trip start/end": ", 2026-05-14 15:49:24.138000+00:00, 2026-05-14 16:20:40.163000+00:00",
+    "source": "api",
+    "supabase_trip_id": 641
+  },
+  "602CA_Trip18": {
+    "source_file": "API_602CA_20260519_065301.csv",
+    "Trip start/end": ", 2026-05-19 06:53:01.055000+00:00, 2026-05-19 07:28:37.704000+00:00",
+    "source": "api",
+    "supabase_trip_id": 743
+  },
+  "602DE_Trip29": {
+    "source_file": "API_602DE_20260424_085607.csv",
+    "Trip start/end": ", 2026-04-24 08:56:07.400000+00:00, 2026-04-24 09:20:38.397000+00:00",
+    "source": "api",
+    "supabase_trip_id": 390
+  },
+  "602DE_Trip30": {
+    "source_file": "API_602DE_20260429_085658.csv",
+    "Trip start/end": ", 2026-04-29 08:56:58.453000+00:00, 2026-04-29 09:17:12.953000+00:00",
+    "source": "api",
+    "supabase_trip_id": 459
+  },
+  "604F0_Trip23": {
+    "source_file": "API_604F0_20260509_125302.csv",
+    "Trip start/end": ", 2026-05-09 12:53:02.780000+00:00, 2026-05-09 13:14:55.252000+00:00",
+    "source": "api",
+    "supabase_trip_id": 547
+  },
+  "602B1_Trip12": {
+    "source_file": "API_602B1_20260429_110805.csv",
+    "Trip start/end": ", 2026-04-29 11:08:05.876000+00:00, 2026-04-29 11:19:16.502000+00:00",
+    "source": "api",
+    "supabase_trip_id": 467
+  },
+  "602DE_Trip31": {
+    "source_file": "API_602DE_20260514_130807.csv",
+    "Trip start/end": ", 2026-05-14 13:08:07.276000+00:00, 2026-05-14 13:21:01.748000+00:00",
+    "source": "api",
+    "supabase_trip_id": 639
+  },
+  "604F0_Trip24": {
+    "source_file": "API_604F0_20260817_073050.csv",
+    "Trip start/end": ", 2026-08-17 07:30:50.774000+00:00, 2026-08-17 07:57:41.653000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1482
+  },
+  "604F0_Trip25": {
+    "source_file": "API_604F0_20260512_095949.csv",
+    "Trip start/end": ", 2026-05-12 09:59:49.638000+00:00, 2026-05-12 10:13:36.102000+00:00",
+    "source": "api",
+    "supabase_trip_id": 583
+  },
+  "602CA_Trip19": {
+    "source_file": "API_602CA_20260514_195441.csv",
+    "Trip start/end": ", 2026-05-14 19:54:41.948000+00:00, 2026-05-14 20:15:20.608000+00:00",
+    "source": "api",
+    "supabase_trip_id": 644
+  },
+  "602DE_Trip32": {
+    "source_file": "API_602DE_20260508_131120.csv",
+    "Trip start/end": ", 2026-05-08 13:11:20.928000+00:00, 2026-05-08 13:21:54.725000+00:00",
+    "source": "api",
+    "supabase_trip_id": 541
+  },
+  "602DE_Trip33": {
+    "source_file": "API_602DE_20260510_213428.csv",
+    "Trip start/end": ", 2026-05-10 21:34:28.609000+00:00, 2026-05-10 21:48:01.388000+00:00",
+    "source": "api",
+    "supabase_trip_id": 554
+  },
+  "602CA_Trip20": {
+    "source_file": "API_602CA_20260518_192351.csv",
+    "Trip start/end": ", 2026-05-18 19:23:51.918000+00:00, 2026-05-18 20:05:58.633000+00:00",
+    "source": "api",
+    "supabase_trip_id": 741
+  },
+  "602D3_Trip9": {
+    "source_file": "API_602D3_20260415_150028.csv",
+    "Trip start/end": ", 2026-04-15 15:00:28.238000+00:00, 2026-04-15 15:11:12.862000+00:00",
+    "source": "api",
+    "supabase_trip_id": 244
+  },
+  "602D6_Trip5": {
+    "source_file": "API_602D6_20260408_150020.csv",
+    "Trip start/end": ", 2026-04-08 15:00:20.067000+00:00, 2026-04-08 15:17:26.081000+00:00",
+    "source": "api",
+    "supabase_trip_id": 208
+  },
+  "602CA_Trip21": {
+    "source_file": "API_602CA_20260512_154836.csv",
+    "Trip start/end": ", 2026-05-12 15:48:36.433000+00:00, 2026-05-12 16:38:11.339000+00:00",
+    "source": "api",
+    "supabase_trip_id": 591
+  },
+  "604F0_Trip26": {
+    "source_file": "API_604F0_20260617_065008.csv",
+    "Trip start/end": ", 2026-06-17 06:50:08.653000+00:00, 2026-06-17 07:19:11.316000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1004
+  },
+  "602D6_Trip6": {
+    "source_file": "API_602D6_20260420_064032.csv",
+    "Trip start/end": ", 2026-04-20 06:40:32.876000+00:00, 2026-04-20 06:48:42.422000+00:00",
+    "source": "api",
+    "supabase_trip_id": 300
+  },
+  "604F0_Trip27": {
+    "source_file": "API_604F0_20260622_155559.csv",
+    "Trip start/end": ", 2026-06-22 15:55:59.928000+00:00, 2026-06-22 16:26:17.714000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1042
+  },
+  "602D3_Trip10": {
+    "source_file": "API_602D3_20260415_075516.csv",
+    "Trip start/end": ", 2026-04-15 07:55:16.221000+00:00, 2026-04-15 08:09:00.420000+00:00",
+    "source": "api",
+    "supabase_trip_id": 242
+  },
+  "602D3_Trip11": {
+    "source_file": "API_602D3_20260415_085231.csv",
+    "Trip start/end": ", 2026-04-15 08:52:31.488000+00:00, 2026-04-15 09:11:38.895000+00:00",
+    "source": "api",
+    "supabase_trip_id": 243
+  },
+  "602D6_Trip7": {
+    "source_file": "API_602D6_20260415_152047.csv",
+    "Trip start/end": ", 2026-04-15 15:20:47.859000+00:00, 2026-04-15 15:38:08.059000+00:00",
+    "source": "api",
+    "supabase_trip_id": 245
+  },
+  "604F0_Trip28": {
+    "source_file": "API_604F0_20260414_050054.csv",
+    "Trip start/end": ", 2026-04-14 05:00:54.040000+00:00, 2026-04-14 06:17:18.990000+00:00",
+    "source": "api",
+    "supabase_trip_id": 236
+  },
+  "602DE_Trip34": {
+    "source_file": "API_602DE_20260425_181410.csv",
+    "Trip start/end": ", 2026-04-25 18:14:10.827000+00:00, 2026-04-25 18:34:41.424000+00:00",
+    "source": "api",
+    "supabase_trip_id": 438
+  },
+  "602CA_Trip22": {
+    "source_file": "API_602CA_20260408_143855.csv",
+    "Trip start/end": ", 2026-04-08 14:38:55.717000+00:00, 2026-04-08 15:03:09.147000+00:00",
+    "source": "api",
+    "supabase_trip_id": 206
+  },
+  "63C0A_Trip3": {
+    "source_file": "API_63C0A_20260511_050224.csv",
+    "Trip start/end": ", 2026-05-11 05:02:24.489000+00:00, 2026-05-11 06:15:07.471000+00:00",
+    "source": "api",
+    "supabase_trip_id": 556
+  },
+  "602B1_Trip13": {
+    "source_file": "API_602B1_20260425_192135.csv",
+    "Trip start/end": ", 2026-04-25 19:21:35.409000+00:00, 2026-04-25 19:32:13.630000+00:00",
+    "source": "api",
+    "supabase_trip_id": 439
+  },
+  "63C0A_Trip4": {
+    "source_file": "API_63C0A_20260508_160233.csv",
+    "Trip start/end": ", 2026-05-08 16:02:33.942000+00:00, 2026-05-08 17:02:47.927000+00:00",
+    "source": "api",
+    "supabase_trip_id": 544
+  },
+  "602DE_Trip35": {
+    "source_file": "API_602DE_20260501_081123.csv",
+    "Trip start/end": ", 2026-05-01 08:11:23.040000+00:00, 2026-05-01 08:33:19.604000+00:00",
+    "source": "api",
+    "supabase_trip_id": 479
+  },
+  "602CA_Trip23": {
+    "source_file": "API_602CA_20260420_064224.csv",
+    "Trip start/end": ", 2026-04-20 06:42:24.170000+00:00, 2026-04-20 06:57:01.532000+00:00",
+    "source": "api",
+    "supabase_trip_id": 301
+  },
+  "602CA_Trip24": {
+    "source_file": "API_602CA_20260514_092636.csv",
+    "Trip start/end": ", 2026-05-14 09:26:36.145000+00:00, 2026-05-14 10:02:21.871000+00:00",
+    "source": "api",
+    "supabase_trip_id": 635
+  },
+  "602CA_Trip25": {
+    "source_file": "API_602CA_20260408_203425.csv",
+    "Trip start/end": ", 2026-04-08 20:34:25.358000+00:00, 2026-04-08 20:54:19.352000+00:00",
+    "source": "api",
+    "supabase_trip_id": 213
+  },
+  "602DE_Trip36": {
+    "source_file": "API_602DE_20260426_110158.csv",
+    "Trip start/end": ", 2026-04-26 11:01:58.787000+00:00, 2026-04-26 11:18:09.734000+00:00",
+    "source": "api",
+    "supabase_trip_id": 441
+  },
+  "604F0_Trip29": {
+    "source_file": "API_604F0_20260820_071111.csv",
+    "Trip start/end": ", 2026-08-20 07:11:11.159000+00:00, 2026-08-20 07:39:28.350000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1501
+  },
+  "604F0_Trip30": {
+    "source_file": "API_604F0_20260518_163418.csv",
+    "Trip start/end": ", 2026-05-18 16:34:18.073000+00:00, 2026-05-18 16:56:28.724000+00:00",
+    "source": "api",
+    "supabase_trip_id": 736
+  },
+  "604F0_Trip31": {
+    "source_file": "API_604F0_20260513_074425.csv",
+    "Trip start/end": ", 2026-05-13 07:44:25.507000+00:00, 2026-05-13 08:13:20.235000+00:00",
+    "source": "api",
+    "supabase_trip_id": 594
+  },
+  "602D6_Trip8": {
+    "source_file": "API_602D6_20260415_071019.csv",
+    "Trip start/end": ", 2026-04-15 07:10:19.870000+00:00, 2026-04-15 07:28:51.347000+00:00",
+    "source": "api",
+    "supabase_trip_id": 241
+  },
+  "602D6_Trip9": {
+    "source_file": "API_602D6_20260413_141627.csv",
+    "Trip start/end": ", 2026-04-13 14:16:27.047000+00:00, 2026-04-13 14:31:46.268000+00:00",
+    "source": "api",
+    "supabase_trip_id": 230
+  },
+  "602DE_Trip37": {
+    "source_file": "API_602DE_20260425_145029.csv",
+    "Trip start/end": ", 2026-04-25 14:50:29.258000+00:00, 2026-04-25 15:03:01.434000+00:00",
+    "source": "api",
+    "supabase_trip_id": 432
+  },
+  "602DE_Trip38": {
+    "source_file": "API_602DE_20260513_163750.csv",
+    "Trip start/end": ", 2026-05-13 16:37:50.867000+00:00, 2026-05-13 16:49:11.506000+00:00",
+    "source": "api",
+    "supabase_trip_id": 615
+  },
+  "602DE_Trip39": {
+    "source_file": "API_602DE_20260428_050342.csv",
+    "Trip start/end": ", 2026-04-28 05:03:42.674000+00:00, 2026-04-28 05:18:59.498000+00:00",
+    "source": "api",
+    "supabase_trip_id": 448
+  },
+  "602CA_Trip26": {
+    "source_file": "API_602CA_20260414_163756.csv",
+    "Trip start/end": ", 2026-04-14 16:37:56.347000+00:00, 2026-04-14 16:53:45.924000+00:00",
+    "source": "api",
+    "supabase_trip_id": 239
+  },
+  "602DE_Trip40": {
+    "source_file": "API_602DE_20260513_165458.csv",
+    "Trip start/end": ", 2026-05-13 16:54:58.341000+00:00, 2026-05-13 17:07:47.050000+00:00",
+    "source": "api",
+    "supabase_trip_id": 617
+  },
+  "604F0_Trip32": {
+    "source_file": "API_604F0_20260408_144928.csv",
+    "Trip start/end": ", 2026-04-08 14:49:28.755000+00:00, 2026-04-08 15:07:04.164000+00:00",
+    "source": "api",
+    "supabase_trip_id": 207
+  },
+  "602CA_Trip27": {
+    "source_file": "API_602CA_20260516_111123.csv",
+    "Trip start/end": ", 2026-05-16 11:11:23.835000+00:00, 2026-05-16 11:24:12.642000+00:00",
+    "source": "api",
+    "supabase_trip_id": 697
+  },
+  "63C0A_Trip5": {
+    "source_file": "API_63C0A_20260519_050250.csv",
+    "Trip start/end": ", 2026-05-19 05:02:50.445000+00:00, 2026-05-19 06:14:20.560000+00:00",
+    "source": "api",
+    "supabase_trip_id": 742
+  },
+  "602CA_Trip28": {
+    "source_file": "API_602CA_20260511_195940.csv",
+    "Trip start/end": ", 2026-05-11 19:59:40.251000+00:00, 2026-05-11 20:33:30.928000+00:00",
+    "source": "api",
+    "supabase_trip_id": 572
+  },
+  "602B1_Trip14": {
+    "source_file": "API_602B1_20260501_153313.csv",
+    "Trip start/end": ", 2026-05-01 15:33:13.173000+00:00, 2026-05-01 15:41:48.997000+00:00",
+    "source": "api",
+    "supabase_trip_id": 487
+  },
+  "602DE_Trip41": {
+    "source_file": "API_602DE_20260515_155401.csv",
+    "Trip start/end": ", 2026-05-15 15:54:01.898000+00:00, 2026-05-15 16:18:46.526000+00:00",
+    "source": "api",
+    "supabase_trip_id": 680
+  },
+  "602D6_Trip10": {
+    "source_file": "API_602D6_20260417_103101.csv",
+    "Trip start/end": ", 2026-04-17 10:31:01.989000+00:00, 2026-04-17 10:57:12.045000+00:00",
+    "source": "api",
+    "supabase_trip_id": 272
+  },
+  "602DE_Trip42": {
+    "source_file": "API_602DE_20260504_050727.csv",
+    "Trip start/end": ", 2026-05-04 05:07:27.517000+00:00, 2026-05-04 05:22:32.879000+00:00",
+    "source": "api",
+    "supabase_trip_id": 498
+  },
+  "604F0_Trip33": {
+    "source_file": "API_604F0_20260408_152739.csv",
+    "Trip start/end": ", 2026-04-08 15:27:39.038000+00:00, 2026-04-08 16:01:41.618000+00:00",
+    "source": "api",
+    "supabase_trip_id": 210
+  },
+  "604F0_Trip34": {
+    "source_file": "API_604F0_20260413_154648.csv",
+    "Trip start/end": ", 2026-04-13 15:46:48.637000+00:00, 2026-04-13 16:19:03.123000+00:00",
+    "source": "api",
+    "supabase_trip_id": 234
+  },
+  "604F0_Trip35": {
+    "source_file": "API_604F0_20260810_081615.csv",
+    "Trip start/end": ", 2026-08-10 08:16:15.508000+00:00, 2026-08-10 08:44:28.610000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1465
+  },
+  "604F0_Trip36": {
+    "source_file": "API_604F0_20260510_140427.csv",
+    "Trip start/end": ", 2026-05-10 14:04:27.699000+00:00, 2026-05-10 14:20:32.750000+00:00",
+    "source": "api",
+    "supabase_trip_id": 550
+  },
+  "63C0A_Trip6": {
+    "source_file": "API_63C0A_20260505_050333.csv",
+    "Trip start/end": ", 2026-05-05 05:03:33.403000+00:00, 2026-05-05 06:14:20.733000+00:00",
+    "source": "api",
+    "supabase_trip_id": 506
+  },
+  "602CA_Trip29": {
+    "source_file": "API_602CA_20260514_194036.csv",
+    "Trip start/end": ", 2026-05-14 19:40:36.709000+00:00, 2026-05-14 19:51:50.228000+00:00",
+    "source": "api",
+    "supabase_trip_id": 643
+  },
+  "604F0_Trip37": {
+    "source_file": "API_604F0_20260819_124643.csv",
+    "Trip start/end": ", 2026-08-19 12:46:43.129000+00:00, 2026-08-19 13:02:23.729000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1498
+  },
+  "602CA_Trip30": {
+    "source_file": "API_602CA_20260510_145220.csv",
+    "Trip start/end": ", 2026-05-10 14:52:20.565000+00:00, 2026-05-10 15:02:47.809000+00:00",
+    "source": "api",
+    "supabase_trip_id": 553
+  },
+  "602CA_Trip31": {
+    "source_file": "API_602CA_20260517_181937.csv",
+    "Trip start/end": ", 2026-05-17 18:19:37.874000+00:00, 2026-05-17 18:48:50.270000+00:00",
+    "source": "api",
+    "supabase_trip_id": 701
+  },
+  "602D6_Trip11": {
+    "source_file": "API_602D6_20260417_084628.csv",
+    "Trip start/end": ", 2026-04-17 08:46:28.775000+00:00, 2026-04-17 09:08:42.657000+00:00",
+    "source": "api",
+    "supabase_trip_id": 271
+  },
+  "602CA_Trip32": {
+    "source_file": "API_602CA_20260409_080144.csv",
+    "Trip start/end": ", 2026-04-09 08:01:44.568000+00:00, 2026-04-09 08:21:03.701000+00:00",
+    "source": "api",
+    "supabase_trip_id": 216
+  },
+  "63C0A_Trip7": {
+    "source_file": "API_63C0A_20260423_152251.csv",
+    "Trip start/end": ", 2026-04-23 15:22:51.562000+00:00, 2026-04-23 16:30:18.799000+00:00",
+    "source": "api",
+    "supabase_trip_id": 377
+  },
+  "604F9_Trip9": {
+    "source_file": "API_604F9_20260518_071640.csv",
+    "Trip start/end": ", 2026-05-18 07:16:40.661000+00:00, 2026-05-18 07:47:08.244000+00:00",
+    "source": "api",
+    "supabase_trip_id": 704
+  },
+  "602CA_Trip33": {
+    "source_file": "API_602CA_20260409_192512.csv",
+    "Trip start/end": ", 2026-04-09 19:25:12.426000+00:00, 2026-04-09 19:40:27.468000+00:00",
+    "source": "api",
+    "supabase_trip_id": 223
+  },
+  "602CA_Trip34": {
+    "source_file": "API_602CA_20260516_104231.csv",
+    "Trip start/end": ", 2026-05-16 10:42:31.279000+00:00, 2026-05-16 10:56:34.163000+00:00",
+    "source": "api",
+    "supabase_trip_id": 696
+  },
+  "604F0_Trip38": {
+    "source_file": "API_604F0_20260511_080944.csv",
+    "Trip start/end": ", 2026-05-11 08:09:44.198000+00:00, 2026-05-11 08:38:42.882000+00:00",
+    "source": "api",
+    "supabase_trip_id": 559
+  },
+  "63C0A_Trip8": {
+    "source_file": "API_63C0A_20260508_045953.csv",
+    "Trip start/end": ", 2026-05-08 04:59:53.322000+00:00, 2026-05-08 05:32:14.590000+00:00",
+    "source": "api",
+    "supabase_trip_id": 539
+  },
+  "63C0A_Trip9": {
+    "source_file": "API_63C0A_20260512_050716.csv",
+    "Trip start/end": ", 2026-05-12 05:07:16.217000+00:00, 2026-05-12 06:15:53.759000+00:00",
+    "source": "api",
+    "supabase_trip_id": 574
+  },
+  "602DE_Trip43": {
+    "source_file": "API_602DE_20260504_141443.csv",
+    "Trip start/end": ", 2026-05-04 14:14:43.853000+00:00, 2026-05-04 14:33:33.507000+00:00",
+    "source": "api",
+    "supabase_trip_id": 503
+  },
+  "602CA_Trip35": {
+    "source_file": "API_602CA_20260511_071633.csv",
+    "Trip start/end": ", 2026-05-11 07:16:33.756000+00:00, 2026-05-11 08:03:05.442000+00:00",
+    "source": "api",
+    "supabase_trip_id": 558
+  },
+  "602CA_Trip36": {
+    "source_file": "API_602CA_20260512_082647.csv",
+    "Trip start/end": ", 2026-05-12 08:26:47.948000+00:00, 2026-05-12 09:06:26.895000+00:00",
+    "source": "api",
+    "supabase_trip_id": 581
+  },
+  "602DE_Trip44": {
+    "source_file": "API_602DE_20260429_171903.csv",
+    "Trip start/end": ", 2026-04-29 17:19:03.841000+00:00, 2026-04-29 17:42:59.767000+00:00",
+    "source": "api",
+    "supabase_trip_id": 469
+  },
+  "602DE_Trip45": {
+    "source_file": "API_602DE_20260507_051714.csv",
+    "Trip start/end": ", 2026-05-07 05:17:14.032000+00:00, 2026-05-07 05:26:43.165000+00:00",
+    "source": "api",
+    "supabase_trip_id": 520
+  },
+  "63C0A_Trip10": {
+    "source_file": "API_63C0A_20260507_151940.csv",
+    "Trip start/end": ", 2026-05-07 15:19:40.032000+00:00, 2026-05-07 16:21:59.359000+00:00",
+    "source": "api",
+    "supabase_trip_id": 537
+  },
+  "604F0_Trip39": {
+    "source_file": "API_604F0_20260812_055409.csv",
+    "Trip start/end": ", 2026-08-12 05:54:09.831000+00:00, 2026-08-12 06:21:18.204000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1474
+  },
+  "602CA_Trip37": {
+    "source_file": "API_602CA_20260518_062102.csv",
+    "Trip start/end": ", 2026-05-18 06:21:02.645000+00:00, 2026-05-18 06:56:08.290000+00:00",
+    "source": "api",
+    "supabase_trip_id": 703
+  },
+  "604F0_Trip40": {
+    "source_file": "API_604F0_20260824_075335.csv",
+    "Trip start/end": ", 2026-08-24 07:53:35.098000+00:00, 2026-08-24 08:26:41.997000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1512
+  },
+  "602DE_Trip46": {
+    "source_file": "API_602DE_20260427_050801.csv",
+    "Trip start/end": ", 2026-04-27 05:08:01.597000+00:00, 2026-04-27 05:22:25.789000+00:00",
+    "source": "api",
+    "supabase_trip_id": 444
+  },
+  "602CA_Trip38": {
+    "source_file": "API_602CA_20260415_170903.csv",
+    "Trip start/end": ", 2026-04-15 17:09:03.578000+00:00, 2026-04-15 17:17:05.588000+00:00",
+    "source": "api",
+    "supabase_trip_id": 246
+  },
+  "602DE_Trip47": {
+    "source_file": "API_602DE_20260430_152201.csv",
+    "Trip start/end": ", 2026-04-30 15:22:01.176000+00:00, 2026-04-30 15:38:36.124000+00:00",
+    "source": "api",
+    "supabase_trip_id": 476
+  },
+  "602D3_Trip12": {
+    "source_file": "API_602D3_20260420_063432.csv",
+    "Trip start/end": ", 2026-04-20 06:34:32.101000+00:00, 2026-04-20 06:54:24.840000+00:00",
+    "source": "api",
+    "supabase_trip_id": 298
+  },
+  "602DE_Trip48": {
+    "source_file": "API_602DE_20260507_132517.csv",
+    "Trip start/end": ", 2026-05-07 13:25:17.656000+00:00, 2026-05-07 13:40:43.060000+00:00",
+    "source": "api",
+    "supabase_trip_id": 527
+  },
+  "602DE_Trip49": {
+    "source_file": "API_602DE_20260516_051209.csv",
+    "Trip start/end": ", 2026-05-16 05:12:09.210000+00:00, 2026-05-16 05:27:57.379000+00:00",
+    "source": "api",
+    "supabase_trip_id": 685
+  },
+  "63C0A_Trip11": {
+    "source_file": "API_63C0A_20260512_154731.csv",
+    "Trip start/end": ", 2026-05-12 15:47:31.814000+00:00, 2026-05-12 17:02:51.309000+00:00",
+    "source": "api",
+    "supabase_trip_id": 593
+  },
+  "604F0_Trip41": {
+    "source_file": "API_604F0_20260824_154404.csv",
+    "Trip start/end": ", 2026-08-24 15:44:04.839000+00:00, 2026-08-24 16:13:29.839000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1514
+  },
+  "602DE_Trip50": {
+    "source_file": "API_602DE_20260425_073843.csv",
+    "Trip start/end": ", 2026-04-25 07:38:43.139000+00:00, 2026-04-25 07:52:49.128000+00:00",
+    "source": "api",
+    "supabase_trip_id": 399
+  },
+  "604F0_Trip42": {
+    "source_file": "API_604F0_20260515_080945.csv",
+    "Trip start/end": ", 2026-05-15 08:09:45.849000+00:00, 2026-05-15 08:37:24.376000+00:00",
+    "source": "api",
+    "supabase_trip_id": 654
+  },
+  "602DE_Trip51": {
+    "source_file": "API_602DE_20260424_161731.csv",
+    "Trip start/end": ", 2026-04-24 16:17:31.526000+00:00, 2026-04-24 16:40:32.334000+00:00",
+    "source": "api",
+    "supabase_trip_id": 398
+  },
+  "602CA_Trip39": {
+    "source_file": "API_602CA_20260517_092547.csv",
+    "Trip start/end": ", 2026-05-17 09:25:47.982000+00:00, 2026-05-17 09:59:57.422000+00:00",
+    "source": "api",
+    "supabase_trip_id": 700
+  },
+  "63C0A_Trip12": {
+    "source_file": "API_63C0A_20260501_175404.csv",
+    "Trip start/end": ", 2026-05-01 17:54:04.317000+00:00, 2026-05-01 18:38:34.316000+00:00",
+    "source": "api",
+    "supabase_trip_id": 488
+  },
+  "602CA_Trip40": {
+    "source_file": "API_602CA_20260422_065123.csv",
+    "Trip start/end": ", 2026-04-22 06:51:23.994000+00:00, 2026-04-22 08:06:29.711000+00:00",
+    "source": "api",
+    "supabase_trip_id": 353
+  },
+  "602D6_Trip12": {
+    "source_file": "API_602D6_20260409_153312.csv",
+    "Trip start/end": ", 2026-04-09 15:33:12.860000+00:00, 2026-04-09 15:55:03.746000+00:00",
+    "source": "api",
+    "supabase_trip_id": 220
+  },
+  "604F0_Trip43": {
+    "source_file": "API_604F0_20260811_164212.csv",
+    "Trip start/end": ", 2026-08-11 16:42:12.557000+00:00, 2026-08-11 17:10:26.140000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1471
+  },
+  "602CA_Trip41": {
+    "source_file": "API_602CA_20260513_191107.csv",
+    "Trip start/end": ", 2026-05-13 19:11:07.416000+00:00, 2026-05-13 19:50:28.608000+00:00",
+    "source": "api",
+    "supabase_trip_id": 620
+  },
+  "602DE_Trip52": {
+    "source_file": "API_602DE_20260513_082706.csv",
+    "Trip start/end": ", 2026-05-13 08:27:06.051000+00:00, 2026-05-13 08:52:36.262000+00:00",
+    "source": "api",
+    "supabase_trip_id": 596
+  },
+  "602CA_Trip42": {
+    "source_file": "API_602CA_20260421_084056.csv",
+    "Trip start/end": ", 2026-04-21 08:40:56.861000+00:00, 2026-04-21 08:55:08.822000+00:00",
+    "source": "api",
+    "supabase_trip_id": 326
+  },
+  "602DE_Trip53": {
+    "source_file": "API_602DE_20260505_051102.csv",
+    "Trip start/end": ", 2026-05-05 05:11:02.025000+00:00, 2026-05-05 05:25:48.428000+00:00",
+    "source": "api",
+    "supabase_trip_id": 505
+  },
+  "63C0A_Trip13": {
+    "source_file": "API_63C0A_20260511_152921.csv",
+    "Trip start/end": ", 2026-05-11 15:29:21.961000+00:00, 2026-05-11 16:44:38.698000+00:00",
+    "source": "api",
+    "supabase_trip_id": 568
+  },
+  "602CA_Trip43": {
+    "source_file": "API_602CA_20260513_091354.csv",
+    "Trip start/end": ", 2026-05-13 09:13:54.486000+00:00, 2026-05-13 09:48:16.398000+00:00",
+    "source": "api",
+    "supabase_trip_id": 597
+  },
+  "604F0_Trip44": {
+    "source_file": "API_604F0_20260830_184102.csv",
+    "Trip start/end": ", 2026-08-30 18:41:02.050000+00:00, 2026-08-30 18:43:55.450000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1523
+  },
+  "604F0_Trip45": {
+    "source_file": "API_604F0_20260830_183658.csv",
+    "Trip start/end": ", 2026-08-30 18:36:58.268000+00:00, 2026-08-30 18:39:49.808000+00:00",
+    "source": "api",
+    "supabase_trip_id": 1522
   }
 }
