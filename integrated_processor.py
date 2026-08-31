@@ -95,6 +95,28 @@ CRASH_API_STOP_WINDOW_SAMPLES = 100      # 2.0s at 50 Hz
 # samples under threshold instead of literally all of them.
 CRASH_API_STOP_FRACTION = 0.9
 
+# Pre-impact "was actually moving" check. Once analyze_api_crash_recovery()
+# started falling back to accelerometer settling for the stop check, it
+# turned out CRASH_SETTLE_G (1.5g std) is a generous enough bar that
+# ordinary calm riding often clears it too — so "settled after impact"
+# alone stopped distinguishing a real crash (moving bike suddenly stops)
+# from an already-idle bump (bike was basically stationary already, a
+# small jolt doesn't change that). Confirmed empirically on 604F0_Trip21:
+# every one of 8 impact candidates above 4g had a post-impact window calm
+# enough to pass "settled", including a single-sample 4.19g blip that is
+# almost certainly sensor noise.
+# Fix: require the accelerometer to show genuine riding-level variance in
+# the window *before* the impact, not just calm after it — i.e. a real
+# transition from moving to stopped, not "was already idle, stayed idle".
+# Calibrated per-trip (CRASH_PRE_IMPACT_ACTIVE_FRACTION × this trip's own
+# median rolling accelerometer std) rather than a hardcoded absolute g
+# value, since the noise floor varies by device/mount. On Trip21 this
+# threshold (0.5x) cleanly separated the noise blip (0.42x baseline) from
+# every other genuine candidate (0.68x-1.53x baseline), with no examples
+# landing near the boundary.
+CRASH_PRE_IMPACT_WINDOW_SAMPLES = 100    # 2.0s at 50 Hz, same as the settle window
+CRASH_PRE_IMPACT_ACTIVE_FRACTION = 0.5
+
 # Severity buckets for the map legend.
 CRASH_SEVERITY_MINOR_MAX_G = 8.0
 CRASH_SEVERITY_HARD_MAX_G = 11.0
@@ -121,7 +143,22 @@ CRASH_LOW_SPEED_MAX_KMH = 10.0      # >1 to <=10 -> Low-Speed Fall; >10 -> Movin
 # Bumped 2 -> 3 here because CRASH_API_STOP_FRACTION changes which API-path
 # trips confirm as crashes; every previously-processed trip needs one more
 # pass under the relaxed gate to pick up crashes that were wrongly rejected.
-PROCESSING_VERSION = 3
+#
+# Bumped 3 -> 4: API-path GPS corroboration (speed_ok and came_to_stop) now
+# falls back to accelerometer-only confirmation when GPS speed doesn't
+# clearly show a stop — see analyze_api_crash_recovery() and
+# detect_crash_events() for why even a "real" GPS reading can't be trusted
+# as evidence the bike kept moving right after a hard impact.
+#
+# Bumped 4 -> 5: added the was_moving_before pre-impact check. The v4
+# accelerometer fallback turned out too permissive on its own — every
+# impact candidate above 4g in 604F0_Trip21 passed the post-impact
+# "settled" check, including an almost-certainly-noise single-sample 4.19g
+# blip, because ordinary calm riding often already clears CRASH_SETTLE_G.
+# Confirmation now also requires the accelerometer to show genuine
+# riding-level variance in the window *before* impact (a real
+# moving-to-stopped transition), not just calm after it.
+PROCESSING_VERSION = 5
 PROCESSING_VERSION_FILE = Path("processing_versions.json")
 
 # Manual escape hatch: set True to force a full rebuild regardless of version
@@ -455,6 +492,26 @@ def estimate_preimpact_gps_speed(gps_speed_data, samples_seq, peak_idx):
     return round(min(float(np.mean(valid)), 40.0), 1)
 
 
+def _trip_baseline_accel_std(acc_y_data, window=CRASH_PRE_IMPACT_WINDOW_SAMPLES, stride=20):
+    """Rough baseline for 'normal riding' accelerometer variance across this
+    trip. Used to judge whether a candidate impact happened while the bike
+    was genuinely moving beforehand (vs. an already-idle bump) — see
+    CRASH_PRE_IMPACT_ACTIVE_FRACTION. Self-calibrating per trip rather than
+    a hardcoded absolute g-value, since the noise floor varies by device
+    and mount position. Returns None if the trip is too short to sample.
+    """
+    n = len(acc_y_data)
+    if n < window:
+        return None
+    stds = [
+        float(np.std(acc_y_data[i:i + window]))
+        for i in range(0, n - window, stride)
+    ]
+    if not stds:
+        return None
+    return float(np.median(stds))
+
+
 def analyze_crash_recovery(hrot_data, end_idx):
     """
     Local/manual trip recovery test.
@@ -487,46 +544,53 @@ def analyze_crash_recovery(hrot_data, end_idx):
     return False, None, False
 
 
-def analyze_api_crash_recovery(speed_gps_data, end_idx):
+def analyze_api_crash_recovery(speed_gps_data, end_idx, acc_y_data=None):
     """
     API/GPS trip recovery test.
 
-    API-rendered trips do not reliably carry HRot, so require forward-filled
-    GPS speed to stay at/below the near-zero stop threshold for a full
-    2-second window.
+    API-rendered trips do not reliably carry HRot, so the primary check
+    requires GPS speed to stay at/below the near-zero stop threshold for a
+    full 2-second window, tolerating a minority of noisy samples
+    (CRASH_API_STOP_FRACTION).
 
-    Previously this required np.all(valid <= CRASH_API_STOP_SPEED_KMH) —
-    every single sample in the window under threshold. Raw point-to-point
-    GPS speed is noisy (multipath, satellite geometry), so a bike that is
-    genuinely stationary can still produce one or two samples reading
-    2-3 km/h. That single noisy sample failed the whole 2-second window and
-    silently killed real crash confirmations on the API path — this is what
-    was hiding the simulated crash. Require a large majority of samples
-    (CRASH_API_STOP_FRACTION) under threshold instead of literally all of
-    them, which tolerates isolated GPS noise without loosening the gate
-    enough to confirm a bike that's actually still moving.
+    Fallback — GPS doesn't clearly confirm a stop:
+    Confirmed on 604F0_Trip21's real 13.4g crash: the post-impact window had
+    genuine (non-forward-filled) GPS rows at 1355 and 1431 samples in — both
+    reporting 18 km/h, over 1.5s after an impact the accelerometer itself
+    shows settling immediately. That's not a forward-fill artefact; the
+    device's own GPS-speed field appears to lag / hold a stale value for a
+    while right after a hard impact (loss of fix, doppler-speed catching
+    up, etc). So a "real" reading here isn't necessarily a trustworthy one,
+    and can't be allowed to veto a crash the accelerometer independently
+    confirms. Whenever GPS doesn't clearly show near-zero speed — whether
+    because there's no real reading in the window, or the real reading(s)
+    present don't show a stop — fall back to the accelerometer: sustained
+    low variance over the same window (no pedaling/riding vibration) is
+    treated as sufficient stop evidence on its own.
     """
     if speed_gps_data is None or end_idx >= len(speed_gps_data):
         return False, None, False
 
-    speed_ffill = _forward_fill(speed_gps_data)
     post_lo = end_idx + 1
-    post_hi = min(
-        len(speed_ffill),
-        post_lo + CRASH_API_STOP_WINDOW_SAMPLES
-    )
-    post = speed_ffill[post_lo:post_hi]
+    post_hi = min(len(speed_gps_data), post_lo + CRASH_API_STOP_WINDOW_SAMPLES)
+    raw_post = speed_gps_data[post_lo:post_hi]
 
-    if len(post) < CRASH_API_STOP_WINDOW_SAMPLES:
+    if len(raw_post) < CRASH_API_STOP_WINDOW_SAMPLES:
         return False, None, False
 
-    valid = post[~np.isnan(post)]
-    if len(valid) < CRASH_API_STOP_WINDOW_SAMPLES:
-        return False, None, False
+    real_mask = ~np.isnan(raw_post)
 
-    stopped_fraction = (valid <= CRASH_API_STOP_SPEED_KMH).mean()
-    if stopped_fraction >= CRASH_API_STOP_FRACTION:
-        return True, round(len(post) / SAMPLE_RATE_HZ, 1), False
+    if np.any(real_mask):
+        real_values = raw_post[real_mask]
+        stopped_fraction = (real_values <= CRASH_API_STOP_SPEED_KMH).mean()
+        if stopped_fraction >= CRASH_API_STOP_FRACTION:
+            return True, round(len(raw_post) / SAMPLE_RATE_HZ, 1), False
+
+    # GPS didn't clearly confirm a stop — fall back to the accelerometer.
+    if acc_y_data is not None:
+        acc_post = acc_y_data[post_lo:post_hi]
+        if len(acc_post) == CRASH_API_STOP_WINDOW_SAMPLES and np.nanstd(acc_post) < CRASH_SETTLE_G:
+            return True, round(len(acc_post) / SAMPLE_RATE_HZ, 1), False
 
     return False, None, False
 
@@ -574,7 +638,8 @@ def detect_crash_events(
         prev = idx
     events.append((start, prev))
 
-    speed_ffill = _forward_fill(speed_gps_data) if speed_gps_data is not None else None
+    baseline_std = _trip_baseline_accel_std(acc_y_data)
+
     results = []
 
     for s, e in events:
@@ -587,26 +652,46 @@ def detect_crash_events(
         post = acc_y_data[post_lo:post_hi]
         settled = len(post) == settle_window and np.nanstd(post) < settle_g
 
-        if speed_ffill is not None:
-            post_speed = speed_ffill[post_lo:post_hi]
-            valid = post_speed[~np.isnan(post_speed)]
-            speed_ok = (
-                len(valid) == 0 or
-                (valid <= speed_confirm_kmh).mean() >= 0.7
-            )
+        # Was the bike actually moving right before impact, or was this a
+        # jolt during an already-idle stretch? See CRASH_PRE_IMPACT_ACTIVE_FRACTION.
+        pre_lo = max(0, s - CRASH_PRE_IMPACT_WINDOW_SAMPLES)
+        pre = acc_y_data[pre_lo:s]
+        if baseline_std and baseline_std > 0 and len(pre) > 0:
+            was_moving_before = np.std(pre) >= CRASH_PRE_IMPACT_ACTIVE_FRACTION * baseline_std
         else:
-            speed_ok = True
+            # No usable baseline (very short trip) — don't let this gate
+            # block confirmation; fall back to the other checks only.
+            was_moving_before = True
 
         if use_gps_recovery:
             came_to_stop, recovery_time_s, unresolved = analyze_api_crash_recovery(
-                speed_gps_data, e
+                speed_gps_data, e, acc_y_data=acc_y_data
             )
+            # analyze_api_crash_recovery() already does a careful
+            # GPS-then-accelerometer-fallback check for this path (see its
+            # docstring: GPS speed right after a hard impact has been
+            # observed to hold a stale non-zero value for 1.5s+, even on a
+            # genuine crash). The blunt speed_ok gate below would just
+            # re-apply the same unreliable GPS signal as a second veto —
+            # skip it here so it can't override a came_to_stop the
+            # accelerometer already independently confirmed.
+            speed_ok = True
         else:
             came_to_stop, recovery_time_s, unresolved = analyze_crash_recovery(
                 hrot_data, e
             )
+            if speed_gps_data is not None:
+                speed_ffill = _forward_fill(speed_gps_data)
+                post_speed = speed_ffill[post_lo:post_hi]
+                valid = post_speed[~np.isnan(post_speed)]
+                speed_ok = (
+                    len(valid) == 0 or
+                    (valid <= speed_confirm_kmh).mean() >= 0.7
+                )
+            else:
+                speed_ok = True
 
-        confirmed = bool(settled and speed_ok and came_to_stop)
+        confirmed = bool(settled and speed_ok and came_to_stop and was_moving_before)
 
         results.append({
             'start_idx': int(s),
@@ -616,6 +701,7 @@ def detect_crash_events(
             'settled': bool(settled),
             'speed_low_after': bool(speed_ok),
             'came_to_stop': bool(came_to_stop),
+            'was_moving_before': bool(was_moving_before),
             'recovery_time_s': recovery_time_s,
             'unresolved': bool(unresolved),
             'is_crash': confirmed,
@@ -773,6 +859,7 @@ def process_geojson_file(filepath, trip_id, saved_metadata, debug=False):
                     f"    · peak={cand['peak_g']}g settled={cand['settled']} "
                     f"speed_ok={cand['speed_low_after']} "
                     f"came_to_stop={cand['came_to_stop']} "
+                    f"was_moving_before={cand.get('was_moving_before')} "
                     f"unresolved={cand['unresolved']} "
                     f"(sample {cand['start_idx']}-{cand['end_idx']})"
                 )
