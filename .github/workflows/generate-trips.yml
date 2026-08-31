@@ -23,54 +23,50 @@ jobs:
       - name: Install dependencies
         run: pip install psycopg2-binary python-dotenv numpy geojson
 
-      # Step 1: fetch any trips from Supabase not yet in trips_metadata.json,
-      # convert to clean GeoJSON. Skips already-fetched trips by design —
-      # raw sensor data can't change once a trip is over.
-      # sensor_data/ is rebuilt fresh here every run — it is NOT persisted
-      # between runs. Only newly-fetched trips will ever be present.
-      - name: Fetch + convert trips from Supabase
+      # Fetches any trips from Supabase not already in trips.geojson, and
+      # computes speed, road quality, braking, and crash/fall detection for
+      # them in one pass. This used to be split across
+      # csv_to_geojson_converter.py (fetch) and integrated_processor.py
+      # (process) — that local/CSV pipeline is retired (see
+      # archive/legacy-local-pipeline/), and generate_trips_geojson.py now
+      # does its own Supabase fetch + processing directly.
+      #
+      # Skip-list: load_existing_output() in generate_trips_geojson.py reads
+      # the trips.geojson already committed to the repo and treats every
+      # trip_id already present as done — so previously-fetched trips are
+      # never re-fetched or re-processed, without needing a separate
+      # trips_metadata.json to track it.
+      - name: Generate trips.geojson
         env:
           SUPABASE_HOST:     ${{ secrets.SUPABASE_HOST }}
           SUPABASE_PORT:     ${{ secrets.SUPABASE_PORT }}
           SUPABASE_DB:       ${{ secrets.SUPABASE_DB }}
           SUPABASE_USER:     ${{ secrets.SUPABASE_USER }}
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
-        run: python csv_to_geojson_converter.py --api
+        run: python generate_trips_geojson.py
 
-      # Step 2: speed, road quality, braking, and crash detection. Only
-      # reprocesses a trip when its output is missing or PROCESSING_VERSION
-      # has changed since it was last generated (see processing_versions.json).
-      # processed_sensor_data/ is also ephemeral — only this run's newly
-      # fetched trips get processed here, old trips are untouched.
-      - name: Process speeds, road quality, braking, crash detection
-        run: python integrated_processor.py
-
+      # Reads trips.geojson only — no Supabase connection, no dependency on
+      # the retired local pipeline. Unchanged from before.
       - name: Average road segments
         run: python road_averaging.py
 
-      # generate_trips_geojson.py's load_existing_output carries forward
-      # every previously-committed trip's features from trips.geojson itself,
-      # so old trips survive even though sensor_data/processed_sensor_data
-      # for them no longer exist on disk this run.
-      - name: Generate trips.geojson
-        run: python generate_trips_geojson.py
-
-      # Raw per-trip CSVs are pure intermediate data once _clean.geojson
-      # exists for that trip — drop them so the repo doesn't grow forever.
-      - name: Clean up raw CSVs
-        run: rm -rf csv_data/*
+      # Previously never ran in this workflow — braking_hotspots.json was
+      # only ever produced by a manual local run of master_pipeline.py
+      # (which is itself interactive and can't run in CI). Added here so
+      # the scheduled job actually keeps it up to date.
+      - name: Generate braking hotspots
+        run: python generate_braking_hotspots.py
 
       - name: Commit and push if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # sensor_data and processed_sensor_data are intentionally NOT
-          # tracked — they're ephemeral per-run scratch space now. Only
-          # trips_metadata.json (what's been fetched) and
-          # processing_versions.json (what's been processed) persist,
-          # since those are small and are what make the skip-logic work.
-          TRACKED_PATHS="trips.geojson road_segments_averaged.json trips_metadata.json processing_versions.json"
+          # trips_metadata.json and processing_versions.json are gone —
+          # both were only ever written by the now-archived
+          # csv_to_geojson_converter.py / integrated_processor.py, and
+          # nothing in the current pipeline reads or writes them.
+          TRACKED_PATHS="trips.geojson road_segments_averaged.json braking_hotspots.json"
 
           git add $TRACKED_PATHS
 
