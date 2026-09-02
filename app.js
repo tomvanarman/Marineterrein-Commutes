@@ -697,19 +697,9 @@ function setupBrakingLayer(geojson, labelLayerId) {
 }
 
 // ─── Crash / fall events ────────────────────────────────────────────────────
-// Colour is a fixed channel: it always encodes impact intensity. Type is
-// encoded by glyph shape and outcome by a stroke ring (see setupCrashLayer) —
-// each dimension gets its own dedicated channel, all shown at once, with
-// nothing left to toggle or remap.
-function getCrashColorExpression() {
-  return [
-    'match', ['get', 'severity'],
-    'Severe', '#ff1744',
-    'Hard',   '#ff9100',
-    'Minor',  '#ffea00',
-    /* default */ '#ffea00',
-  ];
-}
+// Severity (colour), type (glyph artwork), and outcome (white ring) are
+// each baked directly into the marker's icon — see CRASH_SEVERITY_COLORS,
+// CRASH_GLYPHS, and drawCrashIcon() below.
 
 function getCrashTypeLabel(properties) {
   if (properties.crash_type) return properties.crash_type;
@@ -745,21 +735,35 @@ function buildCrashFeatures(features) {
       f?.geometry?.type === 'Point' &&
       f?.properties?.event_type === 'crash'
     )
-    .map(f => ({
-      ...f,
-      properties: {
-        ...f.properties,
-        // Compute these once, here, so the circle's outcome ring, the
-        // symbol's type glyph, and the popup all read the same
-        // classification — previously they read crash_type/crash_outcome
-        // straight off the raw feature, which only worked when the source
-        // data already had those exact fields; otherwise every marker
-        // silently fell back to "Unclassified" regardless of its actual
-        // speed/outcome data.
-        crash_type: getCrashTypeLabel(f.properties || {}),
-        crash_outcome: getCrashOutcomeLabel(f.properties || {})
-      }
-    }));
+    .map(f => {
+      const crash_type = getCrashTypeLabel(f.properties || {});
+      const crash_outcome = getCrashOutcomeLabel(f.properties || {});
+      const severity = f.properties?.severity || 'Minor';
+      return {
+        ...f,
+        properties: {
+          ...f.properties,
+          // Compute these once, here, so the icon, and the popup all read
+          // the same classification — previously they read
+          // crash_type/crash_outcome straight off the raw feature, which
+          // only worked when the source data already had those exact
+          // fields; otherwise every marker silently fell back to
+          // "Unclassified" regardless of its actual speed/outcome data.
+          crash_type,
+          crash_outcome,
+          // The icon id that bakes in glyph (crash_type) + colour
+          // (severity) + ring (crash_outcome) — see drawCrashIcon /
+          // ensureCrashIcons above. Computed here so the source data and
+          // ensureCrashIcons() always agree on which icon id a feature
+          // needs.
+          crash_icon_id: crashIconId(
+            crash_type,
+            severity,
+            crash_outcome === 'Unresolved'
+          )
+        }
+      };
+    });
   console.log(`🚨 Found ${crashFeatures.length} crash marker(s)`);
   if (crashFeatures.length > 0) {
     console.log('🚨 Crash markers:', crashFeatures);
@@ -767,8 +771,168 @@ function buildCrashFeatures(features) {
   return { type: 'FeatureCollection', features: crashFeatures };
 }
 
+// Crash marker icons, drawn on canvas rather than rendered as map-font
+// text/circle layers. The vector basemap's font glyphs (Open Sans /
+// Montserrat / Noto Sans) only ship ordinary Latin ranges — Geometric
+// Shapes characters (◆ ▲ ● ■) fall outside that range and silently fail to
+// render from a `text-field`. Drawing them as small raster icons via
+// map.addImage() sidesteps font glyph coverage entirely, and also lets each
+// icon be the actual severity colour (rather than a black glyph sitting on
+// top of a separately-coloured circle).
+//
+// Each icon bakes in two of the three classification dimensions at once:
+//   - glyph  = crash_type   (the actual artwork below, per event type)
+//   - colour = severity     (Minor/Hard/Severe — same hex codes as the
+//                             legend)
+// Outcome (resolved/unresolved) is the third dimension: unresolved crashes
+// get a white ring baked into the same icon; resolved ones don't.
+//
+// Glyph artwork is the path data from the provided icon set (Hard_Crash /
+// Severe_Crash / Tipping_Over / Unknown_Crash — same 4 glyphs also shipped
+// as the "Simple_-_..." PNGs, just under crash-type names there instead of
+// severity names), traced out of a 256×256 viewBox and redrawn here as
+// Path2D so the fill colour can be swapped per severity at draw time,
+// rather than using the fixed colour baked into the source files.
+const CRASH_GLYPHS = {
+  // Arrow swoosh
+  'Stationary Fall': {
+    type: 'path',
+    d: 'M43.3,141.6s19.3-35.5,53.1-44.3c33.8-8.9,70.4,14,70.4,14l5.5-18.8c.1-.5.5-.8,1-1,.8-.3,1.6.1,1.9.9l18.3,53.7c0,.1,0,.2,0,.3,0,.8-.5,1.6-1.3,1.6l-53.3,5c-.4,0-.9-.1-1.2-.4-.6-.6-.6-1.5,0-2.1l15.3-16s-30.5-23.2-59.1-17.9c-28.6,5.3-50.6,24.9-50.6,24.9Z'
+  },
+  // Wifi-style signal arcs
+  'Low-Speed Fall': {
+    type: 'path',
+    d: 'M187.9,145.5c-17-38.7-62.1-60.5-103-49.8-1.5.4-2.3,2-1.7,3.4l3.1,7.8c.6,1.4,2.2,2.2,3.6,1.8,33.6-8.6,70.5,9.2,84.6,40.9.6,1.4,2.2,2.1,3.7,1.7l8.1-2.4c1.5-.5,2.3-2,1.6-3.5h0ZM161.3,153.8c-11.4-24.5-40-38.3-66.3-32.1-1.6.4-2.4,2-1.8,3.4l3.1,7.9c.5,1.4,2.1,2.2,3.5,1.9,19-4.3,39.6,5.7,48,23.2.6,1.3,2.2,2,3.7,1.6l8.1-2.4c1.5-.5,2.3-2.1,1.6-3.5Z'
+  },
+  // Zigzag impact spike — drawn stroked (source is a polyline), not filled
+  'High-Speed Fall': {
+    type: 'polyline',
+    points: [[68.5,167.8],[50.8,139.7],[79.9,139.7],[79.9,91.7],[123.1,138.1],[142.7,76.4],[167.5,127.2],[209.1,106.8],[209.1,141.8]],
+    strokeWidth: 19.8
+  },
+  // Triangle with a question mark
+  'Unclassified': {
+    type: 'path',
+    d: 'M184.2,161.2l-51-100.3c-2.8-5.6-7.5-5.6-10.3,0l-51,100.3c-2.8,5.6,0,10.1,6.4,10.1h99.6c6.3,0,9.2-4.5,6.4-10.1ZM126.3,163.1c-4.9,0-8.2-3.5-8.2-8.3,0-4.9,3.4-8.4,8.2-8.4,4.9,0,8.1,3.4,8.2,8.4,0,4.8-3.2,8.3-8.2,8.3ZM137.4,129c-3.3,3.7-4.7,7.3-4.7,11.4v1.6s-12.2,0-12.2,0v-2.3c-.4-4.7,1.2-9.5,5.3-14.4,3-3.5,5.3-6.5,5.3-9.6s-2.1-5.4-6.7-5.5c-3.1,0-6.7,1-9.1,2.7l-3.1-10c3.3-2,8.8-3.8,15.3-3.8,12.1,0,17.6,6.7,17.6,14.3s-4.4,11.6-7.9,15.4Z'
+  }
+};
+const CRASH_GLYPH_VIEWBOX = 256; // all path/point data above is in this coordinate space
+
+const CRASH_SEVERITY_COLORS = {
+  'Minor':  '#ffea00',
+  'Hard':   '#ff9100',
+  'Severe': '#ff1744'
+};
+
+function crashColorForSeverity(severity) {
+  return CRASH_SEVERITY_COLORS[severity] || CRASH_SEVERITY_COLORS.Minor;
+}
+
+// Small inline SVG version of a crash-type glyph, for the legend (which is
+// plain HTML/CSS, not the map canvas) — reuses the same path/polyline data
+// as drawCrashIcon() so the legend and the map markers always agree on
+// what each glyph looks like. Neutral colour since the legend's
+// Classification row is shape-only; severity colour is a separate row.
+function crashGlyphSvg(crashType, color = '#cfcfcf') {
+  const glyph = CRASH_GLYPHS[crashType] || CRASH_GLYPHS['Unclassified'];
+  const inner = glyph.type === 'polyline'
+    ? `<polyline points="${glyph.points.map(p => p.join(',')).join(' ')}" fill="none" stroke="${color}" stroke-width="${glyph.strokeWidth}" stroke-linejoin="round" stroke-linecap="round"/>`
+    : `<path d="${glyph.d}" fill="${color}"/>`;
+  return `<svg viewBox="0 0 ${CRASH_GLYPH_VIEWBOX} ${CRASH_GLYPH_VIEWBOX}" width="16" height="16">${inner}</svg>`;
+}
+
+// Icon id encodes all three baked-in dimensions so distinct combinations
+// each get their own registered image.
+function crashIconId(crashType, severity, unresolved) {
+  const safeType = (crashType || 'Unclassified').replace(/[^a-zA-Z0-9]+/g, '_');
+  return `crash-icon-${safeType}-${severity}-${unresolved ? 'ring' : 'plain'}`;
+}
+
+// Renders one crash-type glyph as a round badge: dark disc, a severity-
+// coloured ring, the glyph artwork in that same colour, and — for
+// unresolved crashes — an extra white ring outside it. size is the
+// icon's logical (CSS-pixel) diameter; the canvas itself is rendered at
+// size*devicePixelRatio for crispness, matching the pixelRatio passed to
+// map.addImage().
+function drawCrashIcon(crashType, color, unresolved, size = 40) {
+  const glyph = CRASH_GLYPHS[crashType] || CRASH_GLYPHS['Unclassified'];
+  const canvas = document.createElement('canvas');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = size * dpr;
+  canvas.height = size * dpr;
+  const ctx = canvas.getContext('2d');
+
+  // 1 drawing unit = 1 unit in the glyphs' original 256×256 viewBox.
+  const scale = (size * dpr) / CRASH_GLYPH_VIEWBOX;
+  ctx.scale(scale, scale);
+
+  const cx = CRASH_GLYPH_VIEWBOX / 2;
+  const cy = CRASH_GLYPH_VIEWBOX / 2;
+  const discRadius = 118;
+
+  // Dark disc background, matching the badge look of the source icon set.
+  ctx.beginPath();
+  ctx.arc(cx, cy, discRadius, 0, Math.PI * 2);
+  ctx.fillStyle = '#3a3838';
+  ctx.fill();
+
+  // Outcome ring (unresolved only) sits outside the severity ring.
+  if (unresolved) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, discRadius + 6, 0, Math.PI * 2);
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+  }
+
+  // Severity-coloured ring, same colour as the glyph itself.
+  ctx.beginPath();
+  ctx.arc(cx, cy, discRadius - 5, 0, Math.PI * 2);
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+
+  // The glyph itself.
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  if (glyph.type === 'polyline') {
+    ctx.beginPath();
+    glyph.points.forEach(([x, y], i) => {
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.lineWidth = glyph.strokeWidth;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  } else {
+    ctx.fill(new Path2D(glyph.d));
+  }
+
+  return { width: canvas.width, height: canvas.height, data: ctx.getImageData(0, 0, canvas.width, canvas.height).data };
+}
+
+// Registers exactly the icon combinations present in this trip's crash
+// data (at most 4 types × 3 severities × 2 ring states = 24, usually far
+// fewer) — cheap, and map.hasImage() skips anything already registered
+// from a previous trip.
+function ensureCrashIcons(crashFeatures) {
+  const seen = new Set();
+  (crashFeatures || []).forEach(f => {
+    const p = f.properties || {};
+    const id = p.crash_icon_id;
+    if (!id || seen.has(id) || map.hasImage(id)) return;
+    seen.add(id);
+    const severity = p.severity || 'Minor';
+    const unresolved = p.crash_outcome === 'Unresolved';
+    map.addImage(id, drawCrashIcon(p.crash_type, crashColorForSeverity(severity), unresolved), { pixelRatio: window.devicePixelRatio || 1 });
+  });
+}
+
 function setupCrashLayer(geojson, labelLayerId) {
   const crashData = buildCrashFeatures(geojson.features || []);
+
+  ensureCrashIcons(crashData.features);
 
   map.addSource('crash-events', {
     type: 'geojson',
@@ -776,12 +940,13 @@ function setupCrashLayer(geojson, labelLayerId) {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CRASH CIRCLE (id kept as 'crash-events-halo' for compatibility with
-  // existing visibility toggles elsewhere in the file)
+  // TAP-TARGET CIRCLE (id kept as 'crash-events-halo' for compatibility with
+  // existing visibility toggles / click handlers elsewhere in the file)
   //
-  // Plain, solid, flat-filled circle — no blur/opacity trickery. Intensity
-  // (severity) is the fill colour. Outcome is a crisp white stroke ring:
-  // unresolved crashes get a solid white outline, resolved ones get none.
+  // Fully invisible — the visible marker is now the colour+shape icon in
+  // 'crash-events-dot' below. This layer exists purely to give crash
+  // markers a comfortably large hit target, since the icon alone can be a
+  // small tap target at low zoom.
   // ─────────────────────────────────────────────────────────────────────────
   map.addLayer({
     id: 'crash-events-halo',
@@ -791,10 +956,8 @@ function setupCrashLayer(geojson, labelLayerId) {
       visibility: 'none'
     },
     paint: {
-      // Intensity = fill colour (same channel the legend shows).
-      'circle-color': getCrashColorExpression(),
-      'circle-opacity': 0.9,
-      'circle-blur': 0,
+      'circle-color': '#000000',
+      'circle-opacity': 0,
 
       'circle-radius': [
         'interpolate',
@@ -805,31 +968,28 @@ function setupCrashLayer(geojson, labelLayerId) {
         17, 18
       ],
 
-      // Outcome = a plain white outline ring, unresolved only.
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': [
-        'case',
-        ['==', ['get', 'crash_outcome'], 'Unresolved'],
-        3,
-        0
-      ],
-
       'circle-pitch-alignment': 'map'
     }
   }, labelLayerId);
 
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CRASH SYMBOL
+  // CRASH MARKER
   //
-  // Type is represented by shape, drawn small and dark on top of the
-  // colour-coded circle (see above), so it reads as a glyph on a coloured
-  // chip rather than a second, competing colour channel:
+  // Each icon is a round badge: severity (colour), type (glyph artwork),
+  // and outcome (white ring) are all baked into a single raster icon by
+  // drawCrashIcon() and registered by ensureCrashIcons(); 'crash_icon_id'
+  // (computed once in buildCrashFeatures) picks the right one per feature.
+  // Rendered as canvas-drawn icons, not map-font text glyphs — the
+  // basemap's fonts don't cover custom glyph shapes, so a text-field
+  // version of this would silently fail to draw.
   //
-  //   Stationary Fall → ◆
-  //   Low-Speed Fall  → ▲
-  //   High-Speed Fall    → ●
-  //   Unclassified    → ■
+  //   Stationary Fall → arrow swoosh
+  //   Low-Speed Fall  → wifi-style signal arcs
+  //   High-Speed Fall → zigzag impact spike
+  //   Unclassified    → triangle with a question mark
+  //   colour: Minor #ffea00 / Hard #ff9100 / Severe #ff1744
+  //   white ring: unresolved crashes only
   // ─────────────────────────────────────────────────────────────────────────
   map.addLayer({
     id: 'crash-events-dot',
@@ -838,39 +998,25 @@ function setupCrashLayer(geojson, labelLayerId) {
     layout: {
       visibility: 'none',
 
-      'text-field': [
-        'match',
-        ['get', 'crash_type'],
+      'icon-image': ['get', 'crash_icon_id'],
 
-        'Stationary Fall', '◆',
-        'Low-Speed Fall',  '▲',
-        'High-Speed Fall',    '●',
-        'Unclassified',    '■',
-
-        '■'
-      ],
-
-      'text-size': [
+      // Icons are rendered at a 40px logical diameter (see drawCrashIcon),
+      // so icon-size is a multiplier of that base.
+      'icon-size': [
         'interpolate',
         ['linear'],
         ['zoom'],
-        10, 9,
-        14, 13,
-        17, 18
+        10, 0.48,
+        14, 0.68,
+        17, 0.95
       ],
-      
-      'text-allow-overlap': true,
-      'text-ignore-placement': true
+
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true
     },
 
     paint: {
-      // Fixed dark glyph — colour is already carried by the circle beneath it.
-      'text-color': '#1a1a1a',
-
-      'text-halo-color': 'rgba(255,255,255,0.35)',
-      'text-halo-width': 0.4,
-
-      'text-opacity': 1
+      'icon-opacity': 1
     }
   }, labelLayerId);
 
@@ -901,7 +1047,7 @@ function setupCrashLayer(geojson, labelLayerId) {
 
     const recoveryLine =
       p.unresolved === true || p.unresolved === 'true'
-        ? `⚠️ <strong>Wheel didn't turn again for the rest of the trip</strong>`
+        ? `⚠️ <strong>Wheel never turned again</strong>`
         : p.came_to_stop === true || p.came_to_stop === 'true'
           ? `🧍 Came to a stop, moving again after ${p.recovery_time_s}s`
           : `↪️ Kept moving — no stop detected nearby`;
@@ -912,7 +1058,7 @@ function setupCrashLayer(geojson, labelLayerId) {
         <strong>🚨 ${p.severity} Impact</strong><br>
         💥 Peak force: ${p.peak_g}g<br>
         ⚡ Onset: ${p.suddenness_s}s to peak<br>
-        🚲 Type: ${crashType}<br>
+        🚲 Classification: ${crashType}<br>
         📍 Outcome: ${crashOutcome}<br>
         ${speedLine}<br>
         ${recoveryLine}<br>
@@ -931,6 +1077,7 @@ function setupCrashLayer(geojson, labelLayerId) {
 
   console.log('✅ Crash/fall layer added');
 }
+
 
 function setupCrashControls() {
   const cb = document.getElementById('crashCheckbox');
@@ -1461,10 +1608,10 @@ const CRASH_LEGEND_CATEGORIES = [
     label: 'Classification',
     hint: 'Symbol shape = type of event',
     rows: [
-      { swatch: `<div class="cl-swatch cl-swatch--glyph">◆</div>`, label: 'Stationary Fall' },
-      { swatch: `<div class="cl-swatch cl-swatch--glyph">▲</div>`, label: 'Low-Speed Fall' },
-      { swatch: `<div class="cl-swatch cl-swatch--glyph">●</div>`, label: 'High-Speed Fall' },
-      { swatch: `<div class="cl-swatch cl-swatch--glyph">■</div>`, label: 'Unclassified' },
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">${crashGlyphSvg('Stationary Fall')}</div>`, label: 'Stationary Fall' },
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">${crashGlyphSvg('Low-Speed Fall')}</div>`, label: 'Low-Speed Fall' },
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">${crashGlyphSvg('High-Speed Fall')}</div>`, label: 'High-Speed Fall' },
+      { swatch: `<div class="cl-swatch cl-swatch--glyph">${crashGlyphSvg('Unclassified')}</div>`, label: 'Unclassified' },
     ]
   },
   {

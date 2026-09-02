@@ -298,7 +298,6 @@ def calculate_braking_intensity(prev_speed_kmh, curr_speed_kmh, time_diff_s):
 # ── Crash/fall detection (API path) ─────────────────────────────────────────
 CRASH_IMPACT_THRESHOLD_G      = 6.0
 CRASH_CLUSTER_GAP_S           = 1.0
-CRASH_COOLDOWN_S              = 2.0
 CRASH_STALL_THRESHOLD_S       = 1.0
 CRASH_STOP_SEARCH_WINDOW_S    = 3.0
 CRASH_SPEED_LOOKBACK_S        = 2.0
@@ -310,6 +309,14 @@ CRASH_GPS_STILL_MAX_SPEED_KMH = 3.0
 CRASH_COORD_STALL_RADIUS_M    = 2.0
 CRASH_BASELINE_WINDOW_S        = 3.0
 CRASH_BASELINE_DELTA_MIN_G    = 0.5
+
+# Two impact spikes/clusters ("throws") that are closer together than this
+# belong to the same burst. A settle check anchored to an individual throw
+# would see the NEXT throw's spike land inside its own post-impact search
+# window (which looks up to CRASH_SETTLE_WINDOW_S forward) and fail every
+# throw but the last one -- so stillness is confirmed once, at the true end
+# of the whole burst, rather than per throw. See detect_crash_events_api.
+CRASH_BURST_GAP_S             = CRASH_SETTLE_WINDOW_S
 
 CRASH_SEVERITY_BANDS = [
     (6.0,  8.0,  "Minor"),
@@ -326,12 +333,19 @@ def _crash_severity(peak_g):
     return "Minor"
 
 
-def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff, debug=False):
+def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff):
     """
     True if a post-impact acc_y window:
       1. stays within CRASH_SETTLE_MAX_RANGE_G for >= CRASH_SETTLE_DURATION_S
       2. has a mean shifted from the pre-impact baseline by at least
          CRASH_BASELINE_DELTA_MIN_G
+
+    spike_idx anchors the pre-impact baseline lookback; end_idx is where the
+    post-impact settle search begins. For a burst of several throws these
+    are deliberately different points -- baseline is taken from before the
+    FIRST throw in the burst, and the settle search starts after the LAST
+    throw -- so a mid-burst throw's spike can never masquerade as "not
+    settled" (see detect_crash_events_api).
     """
     pre_samples = []
     k = spike_idx - 1
@@ -357,13 +371,6 @@ def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff, debug=Fal
 
         window_duration = t_diff(points[win_start], points[k])
 
-        if debug:
-            print(
-                f"    [acc-trace] win_start={win_start} k={k} "
-                f"window_duration={round(window_duration,3)} "
-                f"qualifies={win_start < k and window_duration >= CRASH_SETTLE_DURATION_S * 0.9}"
-            )
-
         if (
             win_start < k
             and window_duration >= CRASH_SETTLE_DURATION_S * 0.9
@@ -372,31 +379,11 @@ def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff, debug=Fal
             vals = [p["acc_y"] for p in window]
             value_range = max(vals) - min(vals)
 
-            print(
-                f"    [acc-candidate] "
-                f"range={value_range:.3f} "
-                f"duration={window_duration:.3f} "
-                f"win_start={win_start} k={k} "
-                f"range_ok={value_range <= CRASH_SETTLE_MAX_RANGE_G}"
-            )
             if value_range <= CRASH_SETTLE_MAX_RANGE_G:
                 settled_mean = sum(vals) / len(vals)
                 delta = abs(settled_mean - baseline_mean)
-                passed = delta >= CRASH_BASELINE_DELTA_MIN_G
 
-                print(
-                    f"    [acc-settle-check] "
-                    f"baseline={baseline_mean:.3f} "
-                    f"settled={settled_mean:.3f} "
-                    f"delta={delta:.3f} "
-                    f"threshold={CRASH_BASELINE_DELTA_MIN_G:.3f} "
-                    f"range={value_range:.3f} "
-                    f"duration={window_duration:.3f} "
-                    f"samples={len(vals)} "
-                    f"PASS={passed}"
-                )
-
-                if passed:
+                if delta >= CRASH_BASELINE_DELTA_MIN_G:
                     return True
 
         if t_diff(points[end_idx], points[k]) > CRASH_SETTLE_WINDOW_S:
@@ -469,6 +456,22 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                              gnss_rows, gnss_cols, trip_id, wheel_diam_mm):
     """
     Detect crash/fall events for a Supabase-fetched trip.
+
+    Two passes:
+      1. Walk the raw acc_y stream and cluster consecutive over-threshold
+         samples (within CRASH_CLUSTER_GAP_S of each other) into discrete
+         impact spikes -- "throws". This is pure signal clustering, with no
+         settle/stillness gating yet.
+      2. Group throws that happened in rapid succession (gap <=
+         CRASH_BURST_GAP_S) into bursts, and run the settle + GPS-stillness
+         check exactly once per burst, anchored to the true start (baseline)
+         and true end (settle search) of the whole burst. A burst that
+         settles into real stillness is confirmed as genuine; every
+         individual throw inside it is then emitted as its own crash event,
+         not just the last one. This avoids the earlier bug where each
+         throw's own settle window was gated on staying quiet until the
+         *next* throw's spike -- which only the final throw in a rapid
+         sequence could ever satisfy.
     """
     if not raw_rows or not d1_rows:
         return []
@@ -516,15 +519,6 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
             "hrot":    anchor.get("h_rot") or 0,
         })
 
-    if trip_id == "604F0_Trip1511":
-        for idx in list(range(10244, 10250)) + list(range(10278, 10290)):
-            if 0 <= idx < len(points):
-                p = points[idx]
-                print(
-                    f"    [raw-point-detail] idx={idx} samples={p['samples']} "
-                    f"time={p['time']!r} acc_y={p['acc_y']}"
-                )
-
     if len(points) < 3:
         return []
 
@@ -555,9 +549,9 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
 
     wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi if wheel_diam_mm else None
 
-    events = []
+    # ── Pass 1: cluster raw over-threshold samples into discrete throws ────
+    throws = []
     i, n = 0, len(points)
-
     while i < n:
         if abs(points[i]["acc_y"]) >= CRASH_IMPACT_THRESHOLD_G:
             start = i
@@ -571,97 +565,45 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                 j += 1
 
             peak_idx = max(range(start, end + 1), key=lambda k: abs(points[k]["acc_y"]))
-            peak_g = points[peak_idx]["acc_y"]
-            onset_ts = points[start]["time"]
+            throws.append({
+                "start":    start,
+                "end":      end,
+                "peak_idx": peak_idx,
+                "peak_g":   points[peak_idx]["acc_y"],
+                "onset_ts": points[start]["time"],
+            })
+            i = end + 1
+        else:
+            i += 1
 
-            _acc_ok = _acc_y_settles_after_impact(
-                points, start, end, n, t_diff,
-                debug=(trip_id == "604F0_Trip1511"),
-            )
-            _gps_ok = _gps_stops_after_impact(gnss, gnss_ts, onset_ts)
-            if trip_id == "604F0_Trip1511":
-                _pre = [p["acc_y"] for p in points[max(0,start-25):start]]
-                if _pre:
-                    print(f"  [crash-debug-detail] trip={trip_id} peak_g={round(peak_g,2)} pre_baseline={round(sum(_pre)/len(_pre),3)} pre_n={len(_pre)}")
-                print(f"    [points-detail] end_idx={end} n={n} points_after_impact={n - end - 1}")
-                _gaps = [round(t_diff(points[k], points[k+1]), 3) for k in range(end, min(end+15, n-1))]
-                print(f"    [gap-detail] post-impact t_diffs: {_gaps}")
+    if not throws:
+        return []
 
-                # TEMP: find the earliest qualifying 0.9s+ acc_y window
-                # within the 3s post-impact search period for Trip1511.
-                _inspect = []
-                for _q in range(end, n):
-                    _dt = t_diff(points[end], points[_q])
-                    if _dt > CRASH_SETTLE_WINDOW_S:
-                        break
-                    _inspect.append((_q, _dt, points[_q]["acc_y"]))
+    # ── Pass 2: group throws into bursts, gate once per burst ──────────────
+    bursts = [[throws[0]]]
+    for throw in throws[1:]:
+        prev_end = bursts[-1][-1]["end"]
+        if t_diff(points[prev_end], points[throw["start"]]) <= CRASH_BURST_GAP_S:
+            bursts[-1].append(throw)
+        else:
+            bursts.append([throw])
 
-                _best = None
-                _first_pass = None
+    events = []
+    for burst in bursts:
+        first_throw, last_throw = burst[0], burst[-1]
 
-                for _a in range(len(_inspect)):
-                    for _b in range(_a, len(_inspect)):
-                        _duration = _inspect[_b][1] - _inspect[_a][1]
-                        if _duration < CRASH_SETTLE_DURATION_S * 0.9:
-                            continue
-                        # BUG FIX: the real detector (_acc_y_settles_after_impact,
-                        # line ~354) never lets its [win_start, k] window exceed
-                        # CRASH_SETTLE_DURATION_S -- that's the whole point of the
-                        # two-pointer shrink-from-left logic. This diagnostic only
-                        # checked a LOWER bound on duration, so as `_b` grew it kept
-                        # accepting windows up to the full ~3s CRASH_SETTLE_WINDOW_S
-                        # search span. Range (max-min) is monotonic non-decreasing
-                        # with window size, so a >1s "low range" window here can
-                        # never correspond to any real ~1s window the detector
-                        # would evaluate -- it was silently comparing apples to a
-                        # 2-3x-oversized orange. Cap it to match.
-                        if _duration > CRASH_SETTLE_DURATION_S:
-                            break  # larger _b only grows duration further for this _a
+        acc_ok = _acc_y_settles_after_impact(
+            points, first_throw["start"], last_throw["end"], n, t_diff
+        )
+        gps_ok = _gps_stops_after_impact(gnss, gnss_ts, last_throw["onset_ts"])
+        if not (acc_ok and gps_ok):
+            continue
 
-                        _vals = [x[2] for x in _inspect[_a:_b + 1]]
-                        _range = max(_vals) - min(_vals)
-
-                        if _best is None or _range < _best[0]:
-                            _best = (_range, _inspect[_a][1], _inspect[_b][1], len(_vals))
-
-                        if _range <= CRASH_SETTLE_MAX_RANGE_G:
-                            _first_pass = (_inspect[_a][1], _inspect[_b][1], _range, len(_vals))
-                            break
-
-                    if _first_pass is not None:
-                        break
-
-                if _inspect:
-                    print(
-                        f"    [acc-window-detail] inspected={len(_inspect)} "
-                        f"duration={round(_inspect[-1][1],3)}"
-                    )
-
-                if _first_pass:
-                    print(
-                        f"    [acc-window-detail] FIRST PASS: "
-                        f"start={round(_first_pass[0],3)}s "
-                        f"end={round(_first_pass[1],3)}s "
-                        f"duration={round(_first_pass[1]-_first_pass[0],3)}s "
-                        f"range={round(_first_pass[2],3)} "
-                        f"samples={_first_pass[3]}"
-                    )
-                else:
-                    print("    [acc-window-detail] NO qualifying 0.9s+ window within 3s")
-
-                if _best:
-                    print(
-                        f"    [acc-window-detail] BEST range found: "
-                        f"start={round(_best[1],3)}s "
-                        f"end={round(_best[2],3)}s "
-                        f"duration={round(_best[2]-_best[1],3)}s "
-                        f"range={round(_best[0],3)} "
-                        f"samples={_best[3]}"
-                    )
-            if not (_acc_ok and _gps_ok):
-                print(f"  [crash-debug] trip={trip_id} peak_g={round(peak_g,2)} acc_settle={_acc_ok} gps_stop={_gps_ok}")
-                i = end + 1
-                continue
+        for throw in burst:
+            start, end   = throw["start"], throw["end"]
+            peak_idx     = throw["peak_idx"]
+            peak_g       = throw["peak_g"]
+            onset_ts     = throw["onset_ts"]
 
             b_idx = start
             while b_idx > max(0, start - 25) and abs(points[b_idx]["acc_y"]) > 1.0:
@@ -701,7 +643,6 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
 
             fix = nearest_gnss(onset_ts)
             if fix is None:
-                i = end + 1
                 continue
 
             events.append({
@@ -725,14 +666,8 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                 },
             })
 
-            cool_i = end + 1
-            while cool_i < n and t_diff(points[end], points[cool_i]) <= CRASH_COOLDOWN_S:
-                cool_i += 1
-            i = cool_i
-        else:
-            i += 1
-
     return events
+
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
