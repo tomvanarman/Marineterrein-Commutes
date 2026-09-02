@@ -97,16 +97,33 @@
           the standard way to measure impact force.
 
           An incident is flagged when the accelerometer registers a sharp impact
-          of 6g or greater. To rule out false positives from potholes or rough 
-          terrain, the system then checks that the bike came to rest afterward: 
-          within 3 seconds of the impact, it looks for either the sensor readings 
-          settling into a narrow band (varying by no more than 1g) for at least 1 
-          continuous second, or the wheel rotation stopping advancing for that 
-          same stretch— since a spinning wheel can keep vibrating even after the 
-          bike itself is down. Either signal is enough to confirm a fall; if neither 
-          settles, the spike is treated as normal riding activity. Confirmed incidents 
-          are classified by peak impact force: 6–8g is Minor, 8–11g is Hard, and 11g or 
-          greater is Severe.
+          of 6g or greater. Because potholes, rough terrain, and other everyday jolts 
+          can also produce a brief spike above that threshold, a raw impact reading 
+          isn't treated as a confirmed crash until it passes three independent checks:
+
+          '1.' The bike actually stops. Within 3 seconds of the impact, the sensor readings must settle 
+          into a narrow band (varying by no more than 3g) for at least 1 continuous second, and GPS must 
+          confirm the bike stopped moving— its reported speed dropping near zero and its position staying put— 
+          for that same stretch. Both signals have to agree; if either keeps showing motion or vibration, 
+          the spike is treated as normal riding activity (e.g. hitting a pothole and continuing to ride).
+
+          '2.' The wheel actually stalls. Separately from the accelerometer/GPS check above, the system watches 
+          the wheel's own rotation for a stall — the point where it stops turning and, if the bike gets back underway, 
+          resumes. If that recovery takes longer than 120 seconds, the event is treated as a parking artifact (e.g. the 
+          bike being walked, lifted, or left standing) rather than a crash, and is rejected even if the first check passed.
+
+          '3.' The bike was actually moving beforehand. The system looks back up to 10 seconds before the impact to confirm 
+          the bike was in motion. This catches cases where a stationary or parked bike gets knocked, dropped, or otherwise 
+          jolted— a genuine impact reading, but not a riding crash— and excludes it from the count.
+
+          Confirmed incidents are described using three independent dimensions:
+          impact intensity (Minor, Hard, or Severe), accident type (Stationary Fall, Low-Speed Fall,
+          High-Speed Fall, or Unclassified), and outcome (Resolved or Unresolved). Impact intensity is 
+          derived from peak_g, the peak absolute lateral acceleration during the impact, where 'minor' is < 8 g, 
+          'hard' is 8–11 g, and 'severe' is > 11 g. Accident type is based on the bike's
+          estimated wheel speed immediately before impact. Outcome describes
+          whether the bike resumes after the stop; an unresolved incident is one
+          where the wheel does not resume during the recorded route.
         </p>
       </section>
       <section>

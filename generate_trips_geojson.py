@@ -68,10 +68,19 @@ SPEED_SMOOTH_WIN   = 5      # rolling average window for gnss speed
 # API path, and never reaches the map. Dropping them cut the file roughly in
 # half. If you add a property the frontend needs, add it here too, or it
 # will be silently stripped before trips.geojson is written.
+#
+# "timestamp" is a deliberate exception: rows_to_features sets it on every
+# segment (used for road-quality lookups internally), but it was missing
+# from this keep-list, so trim_feature silently dropped it from every
+# segment before trips.geojson was ever written. Segment-level clock time
+# was needed for post-hoc crash-context analysis (e.g. how much of the trip
+# was left after a crash, or the pre-impact speed trend), so it's kept here
+# even though app.js itself doesn't currently read it — remove it again if
+# file size becomes a problem and nothing ends up depending on it.
 SEGMENT_PROPS_TO_KEEP = {
     "trip_id", "Speed", "Speed_display", "road_quality",
     "time_diff_s", "gps_distance_m", "braking_intensity",
-    "is_braking", "time_str",
+    "is_braking", "time_str", "timestamp",
 }
 # 6 decimal places ≈ 11cm — below GPS's own ~1-3m accuracy floor, so this
 # loses no real precision. Going lower (5dp ≈ 1.1m, 4dp ≈ 11m) was tested
@@ -300,15 +309,53 @@ CRASH_IMPACT_THRESHOLD_G      = 6.0
 CRASH_CLUSTER_GAP_S           = 1.0
 CRASH_STALL_THRESHOLD_S       = 1.0
 CRASH_STOP_SEARCH_WINDOW_S    = 3.0
-CRASH_SPEED_LOOKBACK_S        = 2.0
+# speed_at_impact_kmh's lookback used to be a fixed CRASH_SPEED_LOOKBACK_S
+# (2.0s) window: walk back 2s, diff h_rot across it. On a manual check
+# (602CA_Trip523/538, 602DE_Trip228) that produced None on 41 of 43 impacts
+# -- not because the wheel wasn't turning, but because data1 anchors are
+# spaced wider than 2s on the large majority of impacts, so the window
+# usually only contains the impact's own anchor with nothing to diff
+# against. Replaced below with a walk-back that keeps going until it finds
+# a second DISTINCT h_rot anchor, however long that takes, rather than
+# giving up at a fixed time. CRASH_SPEED_LOOKBACK_MAX_S is the ceiling on
+# that walk-back, so a long earlier stretch of unchanging h_rot (e.g. the
+# rider genuinely stationary well before this impact) doesn't get reported
+# as a stale, meaningless "speed at impact" from minutes ago.
+CRASH_SPEED_LOOKBACK_MAX_S    = 10.0
+
+# Ceiling on recovery_time_s (the gap between the wheel stalling and next
+# rotating again). Observed on a full reprocess: real falls resolve in
+# single-digit to low-double-digit seconds; several "confirmed" events had
+# recovery_time_s in the hundreds or even ~1600s (27 min) -- that's not a
+# rider getting back up, that's the bike being parked/locked at the end of
+# the ride, with the impact spike being the thud of leaning it against a
+# rack or dropping the kickstand. Events past this ceiling (or where
+# came_to_stop never resolved to True at all -- see the came_to_stop/
+# unresolved gate below) are dropped as parking artifacts, not crashes.
+CRASH_MAX_RECOVERY_S          = 120.0
 
 CRASH_SETTLE_WINDOW_S         = CRASH_STOP_SEARCH_WINDOW_S
 CRASH_SETTLE_DURATION_S       = 1.0
-CRASH_SETTLE_MAX_RANGE_G      = 1.0
-CRASH_GPS_STILL_MAX_SPEED_KMH = 3.0
-CRASH_COORD_STALL_RADIUS_M    = 2.0
+# Calibrated against 4 confirmed crashes on trip 604F0_Trip1511 (2026-08-24):
+# observed best-window ranges were 0.01/2.86/0.44/0.84g -- 3.0 admits all four
+# while still rejecting ongoing pedaling vibration, which stays noisier/less
+# settled than a bike that's actually down or a rider who's actually stopped.
+CRASH_SETTLE_MAX_RANGE_G      = 3.0
+# Observed "stopped" GPS readings for those same 4 crashes were 3-5 km/h and
+# 2.1-4.0m coordinate spread across fixes -- i.e. GPS's own noise floor, not
+# the rider still moving. 3.0/2.0 was stricter than GPS itself can report even
+# when genuinely stationary, so it rejected every real crash. This check is
+# still the main crash-vs-pothole discriminator: a rider who absorbs a bump
+# and keeps riding will not produce a held near-stop within CRASH_SETTLE_WINDOW_S.
+CRASH_GPS_STILL_MAX_SPEED_KMH = 5.5
+CRASH_COORD_STALL_RADIUS_M    = 5.0
 CRASH_BASELINE_WINDOW_S        = 3.0
-CRASH_BASELINE_DELTA_MIN_G    = 0.5
+# Removed as a gating condition (was 0.5): real crashes on 604F0_Trip1511
+# showed post-impact baseline shifts of only 0.01-0.14g, so bike/mount
+# orientation isn't reliably changing after a fall for this hardware. Kept at
+# 0.0 (i.e. disabled) rather than deleted outright so the diagnostic tooling
+# and _acc_y_settles_after_impact's signature don't need to change.
+CRASH_BASELINE_DELTA_MIN_G    = 0.0
 
 # Two impact spikes/clusters ("throws") that are closer together than this
 # belong to the same burst. A settle check anchored to an individual throw
@@ -463,10 +510,15 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
          impact spikes -- "throws". This is pure signal clustering, with no
          settle/stillness gating yet.
       2. Group throws that happened in rapid succession (gap <=
-         CRASH_BURST_GAP_S) into bursts, and run the settle + GPS-stillness
-         check exactly once per burst, anchored to the true start (baseline)
-         and true end (settle search) of the whole burst. A burst that
-         settles into real stillness is confirmed as genuine; every
+         CRASH_BURST_GAP_S) into bursts, and run three checks exactly once
+         per burst, anchored to the true start (baseline/motion check) and
+         true end (settle search) of the whole burst: accelerometer settle
+         after impact, GPS coming to a stop, and the wheel having actually
+         been turning before the burst started (was_moving_before_impact
+         -- rejects jolts to a bike that was never moving in the first
+         place, e.g. parked/being loaded, which would otherwise settle
+         and GPS-stop trivially since it was stationary all along). A
+         burst that clears all three is confirmed as genuine; every
          individual throw inside it is then emitted as its own crash event,
          not just the last one. This avoids the earlier bug where each
          throw's own settle window was gated on staying quiet until the
@@ -549,6 +601,26 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
 
     wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi if wheel_diam_mm else None
 
+    def wheel_rotation_lookback(idx):
+        """
+        Walk back from points[idx] until hitting a data1 anchor with a
+        DIFFERENT h_rot reading, capped at CRASH_SPEED_LOOKBACK_MAX_S.
+        Shared by was_moving_before_impact (anchored to a burst's first
+        throw) and speed_at_impact_kmh (anchored to each individual
+        throw) -- same walk-back, two different anchor points.
+        Returns (hrot_diff, lb_time_s).
+        """
+        lb_idx = idx
+        while (
+            lb_idx > 0
+            and points[lb_idx]["hrot"] == points[idx]["hrot"]
+            and t_diff(points[lb_idx], points[idx]) < CRASH_SPEED_LOOKBACK_MAX_S
+        ):
+            lb_idx -= 1
+        hrot_diff = points[idx]["hrot"] - points[lb_idx]["hrot"]
+        lb_time_s = t_diff(points[lb_idx], points[idx])
+        return hrot_diff, lb_time_s
+
     # ── Pass 1: cluster raw over-threshold samples into discrete throws ────
     throws = []
     i, n = 0, len(points)
@@ -596,7 +668,24 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
             points, first_throw["start"], last_throw["end"], n, t_diff
         )
         gps_ok = _gps_stops_after_impact(gnss, gnss_ts, last_throw["onset_ts"])
-        if not (acc_ok and gps_ok):
+
+        # Was the wheel actually turning at all in the run-up to this
+        # burst? A jolt to a genuinely stationary bike (parked, being
+        # loaded/unloaded, bumped on a rack) can clear the impact
+        # threshold and pass both acc_ok and gps_ok -- it settles
+        # immediately and GPS already reads near-zero, because it was
+        # never moving in the first place. Confirmed on 602CA_Trip523:
+        # h_rot held completely flat across the full
+        # CRASH_SPEED_LOOKBACK_MAX_S window for 15 of that trip's 16
+        # impact clusters. If there's no wheel_diam for this trip, we
+        # can't check rotation at all, so don't reject blind -- treat
+        # as passing rather than as evidence of anything.
+        moving_ok = True
+        if wheel_circumference_m:
+            hrot_diff_pre, _ = wheel_rotation_lookback(first_throw["start"])
+            moving_ok = hrot_diff_pre > 0
+
+        if not (acc_ok and gps_ok and moving_ok):
             continue
 
         for throw in burst:
@@ -612,11 +701,7 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
 
             speed_kmh = None
             if wheel_circumference_m:
-                lb_idx = start
-                while lb_idx > 0 and t_diff(points[lb_idx], points[start]) < CRASH_SPEED_LOOKBACK_S:
-                    lb_idx -= 1
-                hrot_diff = points[start]["hrot"] - points[lb_idx]["hrot"]
-                lb_time_s = t_diff(points[lb_idx], points[start])
+                hrot_diff, lb_time_s = wheel_rotation_lookback(start)
                 if hrot_diff > 0 and lb_time_s and lb_time_s >= 0.02:
                     revolutions = hrot_diff / 2.0
                     distance_m  = revolutions * wheel_circumference_m
@@ -643,6 +728,16 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
 
             fix = nearest_gnss(onset_ts)
             if fix is None:
+                continue
+
+            # A confirmed crash requires the wheel to actually stall AND
+            # resume within a plausible recovery window. came_to_stop=False
+            # means no stall was ever found (bike kept moving -- not a fall);
+            # unresolved=True means the trip's data ran out before we could
+            # tell either way. Both are treated the same as an unbounded
+            # recovery_time_s: not confirmed, so the event is dropped rather
+            # than emitted. See CRASH_MAX_RECOVERY_S above.
+            if not came_to_stop or recovery_time_s > CRASH_MAX_RECOVERY_S:
                 continue
 
             events.append({
