@@ -1606,7 +1606,7 @@ const CRASH_LEGEND_CATEGORIES = [
   {
     id: 'classification',
     label: 'Classification',
-    hint: 'Symbol shape = type of event',
+    hint: 'Symbol icon = type of event',
     rows: [
       { swatch: `<div class="cl-swatch cl-swatch--glyph">${crashGlyphSvg('Stationary Fall')}</div>`, label: 'Stationary Fall' },
       { swatch: `<div class="cl-swatch cl-swatch--glyph">${crashGlyphSvg('Low-Speed Fall')}</div>`, label: 'Low-Speed Fall' },
