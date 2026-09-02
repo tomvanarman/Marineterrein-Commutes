@@ -103,20 +103,20 @@
           isn't treated as a confirmed crash until it passes three independent checks:
         </p>
         <p>
-          '1.' The bike actually stops. Within 3 seconds of the impact, the sensor readings must settle 
+          <strong>1.</strong> The bike actually stops. Within 3 seconds of the impact, the sensor readings must settle 
           into a narrow band (varying by no more than 3g) for at least 1 continuous second, and GPS must 
           confirm the bike stopped moving— its reported speed dropping near zero and its position staying put— 
           for that same stretch. Both signals have to agree; if either keeps showing motion or vibration, 
           the spike is treated as normal riding activity (e.g. hitting a pothole and continuing to ride).
         </p>
         <p>
-          '2.' The wheel actually stalls. Separately from the accelerometer/GPS check above, the system watches 
+          <strong>2.</strong> The wheel actually stalls. Separately from the accelerometer/GPS check above, the system watches 
           the wheel's own rotation for a stall— the point where it stops turning and, if the bike gets back underway, 
           resumes. If that recovery takes longer than 120 seconds, the event is treated as a parking artifact (e.g. the 
           bike being walked, lifted, or left standing) rather than a crash, and is rejected even if the first check passed.
         </p>
         <p>
-          '3.' The bike was actually moving beforehand. The system looks back up to 10 seconds before the impact to confirm 
+          <strong>3.</strong> The bike was actually moving beforehand. The system looks back up to 10 seconds before the impact to confirm 
           the bike was in motion. This catches cases where a stationary or parked bike gets knocked, dropped, or otherwise 
           jolted— a genuine impact reading, but not a riding crash— and excludes it from the count.
         </p>
