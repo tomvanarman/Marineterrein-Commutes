@@ -326,41 +326,85 @@ def _crash_severity(peak_g):
     return "Minor"
 
 
-def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff):
+def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff, debug=False):
     """
-    True if:
-      1. Post-spike acc_y holds flat within CRASH_SETTLE_MAX_RANGE_G for >= CRASH_SETTLE_DURATION_S.
-      2. The mean post-spike acc_y differs from the pre-spike riding baseline mean by at least
-         CRASH_BASELINE_DELTA_MIN_G (confirming a physical tilt shift vs. normal upright riding).
+    True if a post-impact acc_y window:
+      1. stays within CRASH_SETTLE_MAX_RANGE_G for >= CRASH_SETTLE_DURATION_S
+      2. has a mean shifted from the pre-impact baseline by at least
+         CRASH_BASELINE_DELTA_MIN_G
     """
     pre_samples = []
     k = spike_idx - 1
+
     while k >= 0 and t_diff(points[k], points[spike_idx]) <= CRASH_BASELINE_WINDOW_S:
         pre_samples.append(points[k]["acc_y"])
         k -= 1
-    
+
     if not pre_samples:
         return False
+
     baseline_mean = sum(pre_samples) / len(pre_samples)
 
     win_start = end_idx
     k = end_idx
+
     while k < n:
-        while win_start < k and t_diff(points[win_start], points[k]) > CRASH_SETTLE_DURATION_S:
+        while (
+            win_start < k
+            and t_diff(points[win_start], points[k]) > CRASH_SETTLE_DURATION_S
+        ):
             win_start += 1
-        if t_diff(points[win_start], points[k]) >= CRASH_SETTLE_DURATION_S:
+
+        window_duration = t_diff(points[win_start], points[k])
+
+        if debug:
+            print(
+                f"    [acc-trace] win_start={win_start} k={k} "
+                f"window_duration={round(window_duration,3)} "
+                f"qualifies={win_start < k and window_duration >= CRASH_SETTLE_DURATION_S * 0.9}"
+            )
+
+        if (
+            win_start < k
+            and window_duration >= CRASH_SETTLE_DURATION_S * 0.9
+        ):
             window = points[win_start:k + 1]
-            vals   = [p["acc_y"] for p in window]
-            if max(vals) - min(vals) <= CRASH_SETTLE_MAX_RANGE_G:
+            vals = [p["acc_y"] for p in window]
+            value_range = max(vals) - min(vals)
+
+            print(
+                f"    [acc-candidate] "
+                f"range={value_range:.3f} "
+                f"duration={window_duration:.3f} "
+                f"win_start={win_start} k={k} "
+                f"range_ok={value_range <= CRASH_SETTLE_MAX_RANGE_G}"
+            )
+            if value_range <= CRASH_SETTLE_MAX_RANGE_G:
                 settled_mean = sum(vals) / len(vals)
-                if abs(settled_mean - baseline_mean) >= CRASH_BASELINE_DELTA_MIN_G:
+                delta = abs(settled_mean - baseline_mean)
+                passed = delta >= CRASH_BASELINE_DELTA_MIN_G
+
+                print(
+                    f"    [acc-settle-check] "
+                    f"baseline={baseline_mean:.3f} "
+                    f"settled={settled_mean:.3f} "
+                    f"delta={delta:.3f} "
+                    f"threshold={CRASH_BASELINE_DELTA_MIN_G:.3f} "
+                    f"range={value_range:.3f} "
+                    f"duration={window_duration:.3f} "
+                    f"samples={len(vals)} "
+                    f"PASS={passed}"
+                )
+
+                if passed:
                     return True
+
         if t_diff(points[end_idx], points[k]) > CRASH_SETTLE_WINDOW_S:
             break
+
         k += 1
 
     return False
-
 
 def _gps_stops_after_impact(gnss, gnss_ts, onset_ts):
     """
@@ -472,13 +516,42 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
             "hrot":    anchor.get("h_rot") or 0,
         })
 
+    if trip_id == "604F0_Trip1511":
+        for idx in list(range(10244, 10250)) + list(range(10278, 10290)):
+            if 0 <= idx < len(points):
+                p = points[idx]
+                print(
+                    f"    [raw-point-detail] idx={idx} samples={p['samples']} "
+                    f"time={p['time']!r} acc_y={p['acc_y']}"
+                )
+
     if len(points) < 3:
         return []
 
     def t_diff(a, b):
+        sample_estimate = (b["samples"] - a["samples"]) * 0.02  # 50Hz fallback
         if a["time"] and b["time"]:
-            return (b["time"] - a["time"]).total_seconds()
-        return (b["samples"] - a["samples"]) * 0.02  # 50Hz fallback
+            delta = (b["time"] - a["time"]).total_seconds()
+            # Multiple raw samples can share the same anchored d1 timestamp
+            # (accelerometer sampling faster than the timestamp source updates).
+            # A zero delta between genuinely different samples is a resolution
+            # artifact, not truth. The same artifact also shows up as a small
+            # but NONZERO delta: when a batch of samples anchored to one d1
+            # fix ticks over to the next fix, the two anchor timestamps can be
+            # only milliseconds apart even though dozens of samples (tens of
+            # real seconds at 50Hz) separate them -- e.g. observed directly on
+            # trip 604F0_Trip1511: idx 10246-10283 (38 samples) share one
+            # anchor, then idx 10284's anchor is only 2ms later, which made
+            # t_diff report 0.002s where the sample gap implies ~0.76s. Since
+            # steady-state data confirms ~50Hz is the real floor, and an
+            # anchor-batching artifact can only ever make elapsed time look
+            # SMALLER than truth (never larger), trust whichever estimate is
+            # bigger rather than trusting a small raw delta blindly.
+            if a["samples"] == b["samples"]:
+                return delta
+            if delta != 0:
+                return max(delta, sample_estimate)
+        return sample_estimate
 
     wheel_circumference_m = (wheel_diam_mm / 1000) * math.pi if wheel_diam_mm else None
 
@@ -501,7 +574,92 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
             peak_g = points[peak_idx]["acc_y"]
             onset_ts = points[start]["time"]
 
-            if not _settles_after_impact(points, start, end, n, t_diff, gnss, gnss_ts, onset_ts):
+            _acc_ok = _acc_y_settles_after_impact(
+                points, start, end, n, t_diff,
+                debug=(trip_id == "604F0_Trip1511"),
+            )
+            _gps_ok = _gps_stops_after_impact(gnss, gnss_ts, onset_ts)
+            if trip_id == "604F0_Trip1511":
+                _pre = [p["acc_y"] for p in points[max(0,start-25):start]]
+                if _pre:
+                    print(f"  [crash-debug-detail] trip={trip_id} peak_g={round(peak_g,2)} pre_baseline={round(sum(_pre)/len(_pre),3)} pre_n={len(_pre)}")
+                print(f"    [points-detail] end_idx={end} n={n} points_after_impact={n - end - 1}")
+                _gaps = [round(t_diff(points[k], points[k+1]), 3) for k in range(end, min(end+15, n-1))]
+                print(f"    [gap-detail] post-impact t_diffs: {_gaps}")
+
+                # TEMP: find the earliest qualifying 0.9s+ acc_y window
+                # within the 3s post-impact search period for Trip1511.
+                _inspect = []
+                for _q in range(end, n):
+                    _dt = t_diff(points[end], points[_q])
+                    if _dt > CRASH_SETTLE_WINDOW_S:
+                        break
+                    _inspect.append((_q, _dt, points[_q]["acc_y"]))
+
+                _best = None
+                _first_pass = None
+
+                for _a in range(len(_inspect)):
+                    for _b in range(_a, len(_inspect)):
+                        _duration = _inspect[_b][1] - _inspect[_a][1]
+                        if _duration < CRASH_SETTLE_DURATION_S * 0.9:
+                            continue
+                        # BUG FIX: the real detector (_acc_y_settles_after_impact,
+                        # line ~354) never lets its [win_start, k] window exceed
+                        # CRASH_SETTLE_DURATION_S -- that's the whole point of the
+                        # two-pointer shrink-from-left logic. This diagnostic only
+                        # checked a LOWER bound on duration, so as `_b` grew it kept
+                        # accepting windows up to the full ~3s CRASH_SETTLE_WINDOW_S
+                        # search span. Range (max-min) is monotonic non-decreasing
+                        # with window size, so a >1s "low range" window here can
+                        # never correspond to any real ~1s window the detector
+                        # would evaluate -- it was silently comparing apples to a
+                        # 2-3x-oversized orange. Cap it to match.
+                        if _duration > CRASH_SETTLE_DURATION_S:
+                            break  # larger _b only grows duration further for this _a
+
+                        _vals = [x[2] for x in _inspect[_a:_b + 1]]
+                        _range = max(_vals) - min(_vals)
+
+                        if _best is None or _range < _best[0]:
+                            _best = (_range, _inspect[_a][1], _inspect[_b][1], len(_vals))
+
+                        if _range <= CRASH_SETTLE_MAX_RANGE_G:
+                            _first_pass = (_inspect[_a][1], _inspect[_b][1], _range, len(_vals))
+                            break
+
+                    if _first_pass is not None:
+                        break
+
+                if _inspect:
+                    print(
+                        f"    [acc-window-detail] inspected={len(_inspect)} "
+                        f"duration={round(_inspect[-1][1],3)}"
+                    )
+
+                if _first_pass:
+                    print(
+                        f"    [acc-window-detail] FIRST PASS: "
+                        f"start={round(_first_pass[0],3)}s "
+                        f"end={round(_first_pass[1],3)}s "
+                        f"duration={round(_first_pass[1]-_first_pass[0],3)}s "
+                        f"range={round(_first_pass[2],3)} "
+                        f"samples={_first_pass[3]}"
+                    )
+                else:
+                    print("    [acc-window-detail] NO qualifying 0.9s+ window within 3s")
+
+                if _best:
+                    print(
+                        f"    [acc-window-detail] BEST range found: "
+                        f"start={round(_best[1],3)}s "
+                        f"end={round(_best[2],3)}s "
+                        f"duration={round(_best[2]-_best[1],3)}s "
+                        f"range={round(_best[0],3)} "
+                        f"samples={_best[3]}"
+                    )
+            if not (_acc_ok and _gps_ok):
+                print(f"  [crash-debug] trip={trip_id} peak_g={round(peak_g,2)} acc_settle={_acc_ok} gps_stop={_gps_ok}")
                 i = end + 1
                 continue
 
