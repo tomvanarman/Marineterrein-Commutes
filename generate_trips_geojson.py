@@ -371,6 +371,20 @@ CRASH_SEVERITY_BANDS = [
     (11.0, None, "Severe"),
 ]
 
+# speed_at_impact_kmh comes from a wheel-rotation estimate (hrot_diff /
+# lb_time_s), not GPS -- and lb_time_s can be as short as 0.02s (see
+# wheel_rotation_lookback / CRASH_SPEED_LOOKBACK_MAX_S above). A short
+# lookback window with a modest hrot_diff produces implausible speed
+# estimates (100+ km/h), which used to be silently clamped to this value
+# with round(min(..., 40), 1) -- making every saturated estimate read as
+# exactly "40 km/h" and look like real, if extreme, data. Estimates at or
+# above this cap are now reported as unreliable (speed_kmh -> None,
+# speed_at_impact_unreliable -> True) instead of being clamped and kept,
+# so a crash event doesn't get dropped just because this one derived field
+# is untrustworthy, and the frontend can visibly flag it as unknown rather
+# than plotting a false-precision number.
+CRASH_SPEED_CAP_KMH = 40
+
 
 def _crash_severity(peak_g):
     mag = abs(peak_g)
@@ -700,12 +714,20 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
             suddenness_s = round(t_diff(points[b_idx], points[peak_idx]), 2)
 
             speed_kmh = None
+            speed_at_impact_unreliable = False
             if wheel_circumference_m:
                 hrot_diff, lb_time_s = wheel_rotation_lookback(start)
                 if hrot_diff > 0 and lb_time_s and lb_time_s >= 0.02:
-                    revolutions = hrot_diff / 2.0
-                    distance_m  = revolutions * wheel_circumference_m
-                    speed_kmh   = round(min((distance_m / lb_time_s) * 3.6, 40), 1)
+                    revolutions   = hrot_diff / 2.0
+                    distance_m    = revolutions * wheel_circumference_m
+                    raw_speed_kmh = (distance_m / lb_time_s) * 3.6
+                    if raw_speed_kmh >= CRASH_SPEED_CAP_KMH:
+                        # Short lookback window blew the estimate past a
+                        # plausible bike speed -- don't clamp-and-report,
+                        # flag it instead (see CRASH_SPEED_CAP_KMH above).
+                        speed_at_impact_unreliable = True
+                    else:
+                        speed_kmh = round(raw_speed_kmh, 1)
 
             came_to_stop = False
             recovery_time_s = None
@@ -753,6 +775,7 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                     "severity":             _crash_severity(peak_g),
                     "suddenness_s":         suddenness_s,
                     "speed_at_impact_kmh":  speed_kmh,
+                    "speed_at_impact_unreliable": speed_at_impact_unreliable,
                     "came_to_stop":         came_to_stop,
                     "recovery_time_s":      recovery_time_s,
                     "unresolved":           unresolved,

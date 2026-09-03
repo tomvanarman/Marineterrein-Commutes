@@ -704,6 +704,18 @@ function setupBrakingLayer(geojson, labelLayerId) {
 function getCrashTypeLabel(properties) {
   if (properties.crash_type) return properties.crash_type;
 
+  // speed_at_impact_kmh is now null whenever the wheel-rotation estimate
+  // saturated past CRASH_SPEED_CAP_KMH (generate_trips_geojson.py flags
+  // this with speed_at_impact_unreliable rather than clamping-and-keeping
+  // a fake "40 km/h" reading). The exact number isn't trustworthy, but a
+  // saturated estimate still means the wheel was turning fast enough to
+  // blow past the cap, so keep classifying it as high-speed rather than
+  // falling through to Number(null) === 0, which used to misread these as
+  // Stationary Falls.
+  if (properties.speed_at_impact_unreliable === true || properties.speed_at_impact_unreliable === 'true') {
+    return 'High-Speed Fall';
+  }
+
   const speed = Number(
     properties.preimpact_speed_kmh ??
     properties.speed_at_impact_kmh
@@ -1038,9 +1050,12 @@ function setupCrashLayer(geojson, labelLayerId) {
 
     const p = e.features[0].properties;
 
-    const speedLine = p.speed_at_impact_kmh != null
-      ? `🚴 Speed at impact: ${p.speed_at_impact_kmh} km/h`
-      : `🚴 Speed at impact: unknown`;
+    const speedLine =
+      p.speed_at_impact_unreliable === true || p.speed_at_impact_unreliable === 'true'
+        ? `🚴 Speed at impact: unreliable (estimate too high to trust)`
+        : p.speed_at_impact_kmh != null
+          ? `🚴 Speed at impact: ${p.speed_at_impact_kmh} km/h`
+          : `🚴 Speed at impact: unknown`;
 
     const crashType = getCrashTypeLabel(p);
     const crashOutcome = getCrashOutcomeLabel(p);
