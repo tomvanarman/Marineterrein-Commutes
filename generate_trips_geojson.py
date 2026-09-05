@@ -169,23 +169,28 @@ marker_bounds as (
          order by d1.samples limit 1) as end_sample
     from params p
 ),
+-- Parse each raw_data blob exactly once. Without MATERIALIZED, Postgres is
+-- free to inline this subquery and re-run string_to_array/convert_from
+-- once per generate_series value below (20x per row) instead of once per
+-- row -- see csv_export_query.txt for the original diagnosis/benchmark.
+parsed as materialized (
+    select rd.samples,
+           string_to_array(
+               replace(replace(convert_from(rd.data, 'UTF8'), '[', ''), ']', ''),
+               ','
+           ) as vals
+    from public.raw_data rd
+    join marker_bounds mb on mb.trip_id = rd.trip_id
+    where rd.trip_id = (select trip_id from params)
+      and rd.samples >= mb.start_sample
+      and rd.samples - 9 <= mb.end_sample
+),
 x as (
     select
         rd.samples - 9 + gs.i as output_samples,
         trim(vals[gs.i * 4 + 1])::integer as acc_low,
         trim(vals[gs.i * 4 + 2])::integer as acc_high
-    from (
-        select rd.samples,
-               string_to_array(
-                   replace(replace(convert_from(rd.data, 'UTF8'), '[', ''), ']', ''),
-                   ','
-               ) as vals
-        from public.raw_data rd
-        join marker_bounds mb on mb.trip_id = rd.trip_id
-        where rd.trip_id = (select trip_id from params)
-          and rd.samples >= mb.start_sample
-          and rd.samples - 9 <= mb.end_sample
-    ) rd
+    from parsed rd
     cross join generate_series(0, 9) as gs(i)
 )
 select
@@ -377,12 +382,10 @@ CRASH_SEVERITY_BANDS = [
 # lookback window with a modest hrot_diff produces implausible speed
 # estimates (100+ km/h), which used to be silently clamped to this value
 # with round(min(..., 40), 1) -- making every saturated estimate read as
-# exactly "40 km/h" and look like real, if extreme, data. Estimates at or
-# above this cap are now reported as unreliable (speed_kmh -> None,
-# speed_at_impact_unreliable -> True) instead of being clamped and kept,
-# so a crash event doesn't get dropped just because this one derived field
-# is untrustworthy, and the frontend can visibly flag it as unknown rather
-# than plotting a false-precision number.
+# exactly "40 km/h" and look like real, if extreme, data. An estimate at
+# or above this cap now drops the whole crash event rather than being
+# clamped and kept -- we don't trust the number enough to report it, and
+# not enough to call the event confirmed either.
 CRASH_SPEED_CAP_KMH = 40
 
 
@@ -714,7 +717,6 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
             suddenness_s = round(t_diff(points[b_idx], points[peak_idx]), 2)
 
             speed_kmh = None
-            speed_at_impact_unreliable = False
             if wheel_circumference_m:
                 hrot_diff, lb_time_s = wheel_rotation_lookback(start)
                 if hrot_diff > 0 and lb_time_s and lb_time_s >= 0.02:
@@ -723,11 +725,12 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                     raw_speed_kmh = (distance_m / lb_time_s) * 3.6
                     if raw_speed_kmh >= CRASH_SPEED_CAP_KMH:
                         # Short lookback window blew the estimate past a
-                        # plausible bike speed -- don't clamp-and-report,
-                        # flag it instead (see CRASH_SPEED_CAP_KMH above).
-                        speed_at_impact_unreliable = True
-                    else:
-                        speed_kmh = round(raw_speed_kmh, 1)
+                        # plausible bike speed -- rather than clamp-and-
+                        # report a fake number, drop the whole event: we
+                        # can't trust it enough to call it a confirmed
+                        # fall (see CRASH_SPEED_CAP_KMH above).
+                        continue
+                    speed_kmh = round(raw_speed_kmh, 1)
 
             came_to_stop = False
             recovery_time_s = None
@@ -775,7 +778,6 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                     "severity":             _crash_severity(peak_g),
                     "suddenness_s":         suddenness_s,
                     "speed_at_impact_kmh":  speed_kmh,
-                    "speed_at_impact_unreliable": speed_at_impact_unreliable,
                     "came_to_stop":         came_to_stop,
                     "recovery_time_s":      recovery_time_s,
                     "unresolved":           unresolved,
