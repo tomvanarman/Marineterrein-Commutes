@@ -457,6 +457,65 @@ def _acc_y_settles_after_impact(points, spike_idx, end_idx, n, t_diff):
 
     return False
 
+def _gps_was_stationary_before_impact(gnss, gnss_ts, onset_ts):
+    """
+    True if, immediately before onset_ts, GPS indicates the bike was stationary:
+      1. Reported speed <= CRASH_GPS_STILL_MAX_SPEED_KMH for at least
+         CRASH_SETTLE_DURATION_S.
+      2. The corresponding coordinates remain within
+         CRASH_COORD_STALL_RADIUS_M.
+
+    This is only used to identify a Tip (stationary before and after). It is
+    deliberately kept separate from _gps_stops_after_impact so the existing
+    post-impact crash gate is unchanged.
+    """
+    if not gnss_ts or onset_ts is None:
+        return False
+
+    pos = bisect.bisect_left(gnss_ts, onset_ts)
+    end_idx = pos
+    start_idx = pos - 1
+    if start_idx < 0:
+        return False
+
+    window_start_ts = onset_ts - timedelta(seconds=CRASH_STOP_SEARCH_WINDOW_S)
+    fixes = []
+    idx = start_idx
+    while idx >= 0 and gnss[idx]["timestamp"] >= window_start_ts:
+        fixes.append(gnss[idx])
+        idx -= 1
+
+    fixes.reverse()
+    if len(fixes) < 2:
+        return False
+
+    run_start_ts = None
+    valid_speed_window = False
+
+    for fix in fixes:
+        speed = float(fix["speed"] or 0)
+        if speed <= CRASH_GPS_STILL_MAX_SPEED_KMH:
+            if run_start_ts is None:
+                run_start_ts = fix["timestamp"]
+            elif (fix["timestamp"] - run_start_ts).total_seconds() >= CRASH_SETTLE_DURATION_S:
+                valid_speed_window = True
+                break
+        else:
+            run_start_ts = None
+
+    if not valid_speed_window:
+        return False
+
+    max_dist = 0.0
+    for i in range(len(fixes)):
+        for j in range(i + 1, len(fixes)):
+            d = haversine(fixes[i], fixes[j])
+            if d > max_dist:
+                max_dist = d
+
+    return max_dist <= CRASH_COORD_STALL_RADIUS_M
+
+
 def _gps_stops_after_impact(gnss, gnss_ts, onset_ts):
     """
     True if, within CRASH_SETTLE_WINDOW_S of onset_ts, GPS confirms the bike is stationary via:
@@ -530,12 +589,11 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
          CRASH_BURST_GAP_S) into bursts, and run three checks exactly once
          per burst, anchored to the true start (baseline/motion check) and
          true end (settle search) of the whole burst: accelerometer settle
-         after impact, GPS coming to a stop, and the wheel having actually
-         been turning before the burst started (was_moving_before_impact
-         -- rejects jolts to a bike that was never moving in the first
-         place, e.g. parked/being loaded, which would otherwise settle
-         and GPS-stop trivially since it was stationary all along). A
-         burst that clears all three is confirmed as genuine; every
+         after impact, GPS coming to a stop, and the movement state before
+         the burst. A moving bike follows the existing stall/recovery path;
+         a bike that was stationary before the impact can instead be
+         classified as a Tip if it is also stationary afterward. A burst
+         that clears the relevant checks is confirmed as genuine; every
          individual throw inside it is then emitted as its own crash event,
          not just the last one. This avoids the earlier bug where each
          throw's own settle window was gated on staying quiet until the
@@ -686,23 +744,38 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
         )
         gps_ok = _gps_stops_after_impact(gnss, gnss_ts, last_throw["onset_ts"])
 
-        # Was the wheel actually turning at all in the run-up to this
-        # burst? A jolt to a genuinely stationary bike (parked, being
-        # loaded/unloaded, bumped on a rack) can clear the impact
-        # threshold and pass both acc_ok and gps_ok -- it settles
-        # immediately and GPS already reads near-zero, because it was
-        # never moving in the first place. Confirmed on 602CA_Trip523:
-        # h_rot held completely flat across the full
-        # CRASH_SPEED_LOOKBACK_MAX_S window for 15 of that trip's 16
-        # impact clusters. If there's no wheel_diam for this trip, we
-        # can't check rotation at all, so don't reject blind -- treat
-        # as passing rather than as evidence of anything.
-        moving_ok = True
+        # Determine whether the bike was moving immediately before the
+        # burst. A zero wheel-rotation change means the bike was stationary
+        # over the lookback window. That is a legitimate event now: if it
+        # remains stationary after the impact, classify it as a Tip.
+        #
+        # We still use the wheel as the primary movement signal because the
+        # crash detector already uses h_rot for stop/recovery. GPS is used as
+        # a second check for Tips so a stale/flat h_rot signal cannot turn a
+        # genuinely moving impact into a Tip.
+        stationary_before = False
+        moving_before = True
+        pre_gps_stationary = False
+
         if wheel_circumference_m:
             hrot_diff_pre, _ = wheel_rotation_lookback(first_throw["start"])
-            moving_ok = hrot_diff_pre > 0
+            moving_before = hrot_diff_pre > 0
+            stationary_before = not moving_before
 
-        if not (acc_ok and gps_ok and moving_ok):
+            if stationary_before:
+                pre_gps_stationary = _gps_was_stationary_before_impact(
+                    gnss, gnss_ts, first_throw["onset_ts"]
+                )
+
+        # With wheel data, a stationary-before event is only eligible as a
+        # Tip when GPS also confirms the bike was stationary beforehand.
+        # If there is no wheel diameter, preserve the old behaviour: we
+        # cannot distinguish a Tip from a moving fall, so the normal
+        # stall/recovery path remains in force.
+        if not (acc_ok and gps_ok):
+            continue
+
+        if wheel_circumference_m and stationary_before and not pre_gps_stationary:
             continue
 
         for throw in burst:
@@ -733,34 +806,63 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
             came_to_stop = False
             recovery_time_s = None
             unresolved = False
-            cursor = end
-            while cursor < n - 1 and t_diff(points[end], points[cursor]) <= CRASH_STOP_SEARCH_WINDOW_S:
-                hrot_now = points[cursor]["hrot"]
-                k = cursor + 1
-                while k < n and points[k]["hrot"] == hrot_now:
-                    k += 1
-                if k >= n:
-                    unresolved = True
-                    break
-                gap = t_diff(points[cursor], points[k])
-                if gap >= CRASH_STALL_THRESHOLD_S:
-                    came_to_stop = True
-                    recovery_time_s = round(gap, 2)
-                    break
-                cursor = k
+            is_tip = False
+
+            if wheel_circumference_m and stationary_before:
+                # Tip definition: stationary before AND stationary after.
+                # We do not require a later wheel-rotation resumption. Instead
+                # confirm that the wheel remains on the same h_rot reading for
+                # at least the stall threshold after the impact. Reaching the
+                # end of the trip while still on that same reading also counts
+                # as stationary-after.
+                hrot_after = points[end]["hrot"]
+                cursor = end + 1
+                while cursor < n and points[cursor]["hrot"] == hrot_after:
+                    if t_diff(points[end], points[cursor]) >= CRASH_STALL_THRESHOLD_S:
+                        is_tip = True
+                        break
+                    cursor += 1
+
+                if not is_tip and cursor >= n:
+                    # No subsequent h_rot change exists: the bike remained
+                    # stationary through the available sensor data.
+                    is_tip = True
+
+                if not is_tip:
+                    continue
+
+                came_to_stop = True
+
+            else:
+                # Existing moving-bike fall path: require a wheel stall and
+                # subsequent recovery within the existing search/recovery
+                # limits. This preserves the previously restored crash count
+                # for moving impacts.
+                cursor = end
+                while cursor < n - 1 and t_diff(points[end], points[cursor]) <= CRASH_STOP_SEARCH_WINDOW_S:
+                    hrot_now = points[cursor]["hrot"]
+                    k = cursor + 1
+                    while k < n and points[k]["hrot"] == hrot_now:
+                        k += 1
+                    if k >= n:
+                        unresolved = True
+                        break
+                    gap = t_diff(points[cursor], points[k])
+                    if gap >= CRASH_STALL_THRESHOLD_S:
+                        came_to_stop = True
+                        recovery_time_s = round(gap, 2)
+                        break
+                    cursor = k
+
+                # A moving fall requires the wheel to actually stall AND
+                # resume within a plausible recovery window. came_to_stop=False
+                # means no stall was found; unresolved=True means the trip
+                # ended before recovery could be established.
+                if not came_to_stop or recovery_time_s > CRASH_MAX_RECOVERY_S:
+                    continue
 
             fix = nearest_gnss(onset_ts)
             if fix is None:
-                continue
-
-            # A confirmed crash requires the wheel to actually stall AND
-            # resume within a plausible recovery window. came_to_stop=False
-            # means no stall was ever found (bike kept moving -- not a fall);
-            # unresolved=True means the trip's data ran out before we could
-            # tell either way. Both are treated the same as an unbounded
-            # recovery_time_s: not confirmed, so the event is dropped rather
-            # than emitted. See CRASH_MAX_RECOVERY_S above.
-            if not came_to_stop or recovery_time_s > CRASH_MAX_RECOVERY_S:
                 continue
 
             events.append({
@@ -772,6 +874,7 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                 "properties": {
                     "event_type":           "crash",
                     "trip_id":              trip_id,
+                    "crash_type":            "Tip" if is_tip else None,
                     "peak_g":               round(peak_g, 2),
                     "severity":             _crash_severity(peak_g),
                     "suddenness_s":         suddenness_s,

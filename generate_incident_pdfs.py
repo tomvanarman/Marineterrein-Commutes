@@ -385,7 +385,9 @@ def derive_crash_datetime(crash: dict[str, Any], segs: list[dict[str, Any]]) -> 
 
 
 def classify_crash(p: dict[str, Any]) -> str:
-    # Match app.js, including newer source fields if they appear in the data.
+    # The generator now explicitly classifies genuinely stationary-before-impact
+    # events as Tips. Keep the speed fallback for older GeoJSON that predates
+    # the explicit crash_type field.
     if p.get("crash_type"):
         return str(p["crash_type"])
     if boolish(p.get("speed_at_impact_unreliable")):
@@ -396,7 +398,7 @@ def classify_crash(p: dict[str, Any]) -> str:
     if speed is None:
         return "Unclassified"
     if speed <= 1:
-        return "Stationary Fall"
+        return "Tip"
     if speed <= 10:
         return "Low-Speed Fall"
     return "High-Speed Fall"
@@ -460,6 +462,7 @@ def crash_row(crash: dict[str, Any], segs: list[dict[str, Any]]) -> dict[str, An
         "outcome": crash_outcome,
         "peak_g": p.get("peak_g"),
         "classification": classification,
+        "crash_type": p.get("crash_type"),
         "recovery_time_s": p.get("recovery_time_s"),
         "avg_preimpact_decel_kmh_s": avg_dec,
         "peak_preimpact_decel_kmh_s": peak_dec,
@@ -860,8 +863,9 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
         ["Burst grouping", f"Separate throws grouped when gap ≤ {constants['CRASH_BURST_GAP_S']} s", "Allows rapid multiple impacts to be evaluated as one burst."],
         ["Accelerometer settling", f"Post-impact window up to {constants['CRASH_SETTLE_WINDOW_S']} s; stable for about {constants['CRASH_SETTLE_DURATION_S']} s; range ≤ {constants['CRASH_SETTLE_MAX_RANGE_G']} g", "Requires the accelerometer signal to settle after the impact."],
         ["GPS stop", f"GPS speed ≤ {constants['CRASH_GPS_STILL_MAX_SPEED_KMH']} km/h for ≥ {constants['CRASH_SETTLE_DURATION_S']} s and coordinate spread ≤ {constants['CRASH_COORD_STALL_RADIUS_M']} m", "Separates a fall/stop from a jolt while continuing to ride."],
-        ["Wheel motion before impact", "Wheel must be turning before the burst when wheel diameter is available", "Rejects impacts to a genuinely stationary bike."],
-        ["Wheel stall / recovery", f"Wheel stall gap must be ≥ {constants['CRASH_STALL_THRESHOLD_S']} s; recovery must be ≤ {constants['CRASH_MAX_RECOVERY_S']} s", "Filters out events that look like parking/locking rather than a fall."],
+        ["Motion before impact", "Moving events use wheel rotation before the burst; genuinely stationary-before events are allowed when pre-impact GPS also confirms the bike was stationary.", "Allows stationary falls/tips while retaining a motion check for moving falls."],
+        ["Stationary-before Tip", f"If the bike is stationary before impact and remains stationary after the impact (with accelerometer settling and GPS stop also confirmed), classify as Tip.", "Separates a tip/fall of a stationary bike from moving falls."],
+        ["Wheel stall / recovery", f"Moving events require a wheel stall gap ≥ {constants['CRASH_STALL_THRESHOLD_S']} s and recovery ≤ {constants['CRASH_MAX_RECOVERY_S']} s. Tips do not require a recovery-time value.", "Confirms that a moving fall is followed by a stop; stationary tips are handled by the dedicated Tip rule."],
         ["Impact-speed estimate", f"Wheel-rotation estimate; events at/above {constants['CRASH_SPEED_CAP_KMH']} km/h are not trusted", "This is not the GNSS speed field."],
     ]
     story.append(make_table(crash_defs, column_widths(190, [28, 72, 60]), font_size=6.5))
@@ -878,20 +882,20 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
 
     heading(story, "4. Crash classification", styles)
     classification = [
-        ["Speed at / before impact", "classification"],
+        ["Condition", "classification"],
+        ["crash_type = Tip", "Tip (stationary before impact and stationary after impact)"],
         ["speed_at_impact_unreliable = true", "High-Speed Fall (speed estimate discarded, not measured)"],
-        ["≤1 km/h", "Stationary Fall"],
-        [">1–10 km/h", "Low-Speed Fall"],
-        [">10 km/h", "High-Speed Fall"],
-        ["No trustworthy speed and no unreliable flag", "Unclassified"],
+        ["Legacy fallback: speed ≤1 km/h", "Tip"],
+        ["Legacy fallback: >1–10 km/h", "Low-Speed Fall"],
+        ["Legacy fallback: >10 km/h", "High-Speed Fall"],
+        ["No trustworthy speed and no crash_type", "Unclassified"],
     ]
     story.append(make_table(classification, column_widths(100, [55, 45]), font_size=7))
     story.append(Paragraph(
-        "The unreliable-flag check runs before any numeric-speed check, so an unreliable event is classified "
-        "High-Speed Fall even though its speed_at_impact_kmh is null — that is why some High-Speed Fall rows in "
-        "the crash table show no speed at impact. The frontend currently checks preimpact_speed_kmh first when "
-        "present, then speed_at_impact_kmh. The committed generator currently exports speed_at_impact_kmh; "
-        "therefore this report follows the same fallback logic without changing the event itself.", styles["small"]))
+        "The report now uses the generator's explicit crash_type when present. In the current generator, "
+        "stationary-before events that also remain stationary after impact are exported as crash_type = Tip. "
+        "For older GeoJSON without crash_type, the report keeps a speed-based fallback: ≤1 km/h is treated as Tip, "
+        ">1–10 km/h as Low-Speed Fall, and >10 km/h as High-Speed Fall.", styles["small"]))
 
     heading(story, "5. Crash outcome", styles)
     outcome_tbl = [
@@ -933,7 +937,8 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
         "speed_at_impact_kmh is a wheel-rotation estimate rather than the smoothed GNSS Speed field.",
         "The GeoJSON does not contain a crash-event deceleration measurement. The crash-table deceleration columns are therefore explicitly pre-impact GNSS braking metrics.",
         "Vehicle type is not part of the current committed GeoJSON segment/crash schema, so it is not fabricated in these reports.",
-        "The current generator drops a crash event outright when its wheel-rotation speed estimate reaches CRASH_SPEED_CAP_KMH, rather than keeping it with a null speed and a speed_at_impact_unreliable flag. Most crash points already committed in trips.geojson still carry that flag, so they were produced under an earlier version of this logic. Because already-processed trips are cached and skipped on later runs (see load_existing_output in generate_trips_geojson.py), these events will not be reprocessed under the current behavior unless trips.geojson is deleted and rebuilt from scratch.",
+        "Stationary-before events are now eligible for Tip classification when pre-impact GPS also confirms the bike was stationary. Moving events retain the wheel-stall/recovery checks. "
+        "The current generator only emits confirmed crash points; candidates that fail the required post-impact checks are not exported.",
     ]
     for x in limits:
         story.append(Paragraph("• " + x, styles["body"]))
