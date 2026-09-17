@@ -451,24 +451,25 @@ def crash_row(crash: dict[str, Any], segs: list[dict[str, Any]]) -> dict[str, An
         speed_before = speed_impact
 
     return {
-        "Timestamp": dt.isoformat(sep=" ", timespec="seconds") if dt else safe_text(p.get("time_str")),
-        "Latitude": coords[1] if len(coords) > 1 else None,
-        "Longitude": coords[0] if len(coords) > 0 else None,
-        "Incident type": "Crash / fall",
-        "Intensity": p.get("severity"),
-        "Outcome": crash_outcome,
-        "Peak force (g)": p.get("peak_g"),
-        "Classification": classification,
-        "Standstill / recovery (s)": p.get("recovery_time_s"),
-        "Avg pre-impact decel (km/h/s)": avg_dec,
-        "Peak pre-impact decel (km/h/s)": peak_dec,
-        "Surrounding speed (km/h)": surrounding_speed,
-        "Speed at impact (km/h)": speed_impact,
-        "Speed before impact (km/h)": speed_before,
-        "Onset to peak (s)": p.get("suddenness_s"),
-        "Trip ID": p.get("trip_id"),
-        "Location approximate": p.get("location_approximate"),
-        "Context segments": len(context),
+        "timestamp": dt.isoformat(sep=" ", timespec="seconds") if dt else safe_text(p.get("time_str")),
+        "latitude": coords[1] if len(coords) > 1 else None,
+        "longitude": coords[0] if len(coords) > 0 else None,
+        "heading": p.get("heading"),
+        "event_type": "Crash / fall",
+        "severity": p.get("severity"),
+        "outcome": crash_outcome,
+        "peak_g": p.get("peak_g"),
+        "classification": classification,
+        "recovery_time_s": p.get("recovery_time_s"),
+        "avg_preimpact_decel_kmh_s": avg_dec,
+        "peak_preimpact_decel_kmh_s": peak_dec,
+        "surrounding_speed_kmh": surrounding_speed,
+        "speed_at_impact_kmh": speed_impact,
+        "speed_before_impact_kmh": speed_before,
+        "suddenness_s": p.get("suddenness_s"),
+        "trip_id": p.get("trip_id"),
+        "location_approximate": p.get("location_approximate"),
+        "context_segments": len(context),
     }
 
 
@@ -533,20 +534,21 @@ def braking_row(group: list[dict[str, Any]]) -> dict[str, Any]:
         total_duration = max(0.0, (end_dt - start_dt).total_seconds() + last_duration)
 
     return {
-        "Timestamp": start_dt.isoformat(sep=" ", timespec="seconds") if start_dt else None,
-        "Latitude": lat,
-        "Longitude": lon,
-        "Incident type": "Sudden braking",
-        "Avg deceleration (km/h/s)": mean(intensities) if intensities else None,
-        "Peak deceleration (km/h/s)": max(intensities) if intensities else None,
-        "Surrounding speed (km/h)": mean(surrounding) if surrounding else (mean(speeds) if speeds else None),
-        "Speed at braking segment (km/h)": mean(speeds) if speeds else None,
-        "Duration of flagged interval (s)": total_duration,
-        "Road quality": first.get("properties", {}).get("road_quality"),
-        "GPS distance (m)": sum(clean_num(f.get("properties", {}).get("gps_distance_m")) or 0 for f in group),
-        "Time interval (s)": sum(clean_num(f.get("properties", {}).get("time_diff_s")) or 0 for f in group),
-        "Trip ID": trip_id,
-        "Segments represented": len(group),
+        "timestamp": start_dt.isoformat(sep=" ", timespec="seconds") if start_dt else None,
+        "latitude": lat,
+        "longitude": lon,
+        "heading": first.get("properties", {}).get("heading"),
+        "event_type": "Sudden braking",
+        "avg_deceleration_kmh_s": mean(intensities) if intensities else None,
+        "peak_deceleration_kmh_s": max(intensities) if intensities else None,
+        "surrounding_speed_kmh": mean(surrounding) if surrounding else (mean(speeds) if speeds else None),
+        "speed_at_braking_segment_kmh": mean(speeds) if speeds else None,
+        "duration_flagged_interval_s": total_duration,
+        "road_quality": first.get("properties", {}).get("road_quality"),
+        "gps_distance_m": sum(clean_num(f.get("properties", {}).get("gps_distance_m")) or 0 for f in group),
+        "time_interval_s": sum(clean_num(f.get("properties", {}).get("time_diff_s")) or 0 for f in group),
+        "trip_id": trip_id,
+        "segments_represented": len(group),
     }
 
 
@@ -800,6 +802,12 @@ def rows_to_matrix(rows: list[dict[str, Any]], columns: list[str], decimals: dic
         out = []
         for col in columns:
             v = row.get(col)
+            if col == "timestamp" and v:
+                try:
+                    parsed = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+                    v = parsed.strftime("%d/%m/%Y %H:%M:%S")
+                except (TypeError, ValueError):
+                    pass
             if isinstance(v, float) and col in decimals:
                 out.append(f"{v:.{decimals[col]}f}")
             elif isinstance(v, float):
@@ -870,7 +878,7 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
 
     heading(story, "4. Crash classification", styles)
     classification = [
-        ["Speed at / before impact", "Classification"],
+        ["Speed at / before impact", "classification"],
         ["speed_at_impact_unreliable = true", "High-Speed Fall (speed estimate discarded, not measured)"],
         ["≤1 km/h", "Stationary Fall"],
         [">1–10 km/h", "Low-Speed Fall"],
@@ -887,7 +895,7 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
 
     heading(story, "5. Crash outcome", styles)
     outcome_tbl = [
-        ["Outcome", "Definition"],
+        ["outcome", "Definition"],
         ["Resolved", "came_to_stop = true"],
         ["Unresolved", "unresolved = true"],
         ["Unclassified", "Neither outcome field establishes a state"],
@@ -958,25 +966,25 @@ def write_crash_pdf(out: Path, rows: list[dict[str, Any]]):
     )
 
     columns = [
-        "Timestamp", "Latitude", "Longitude", "Incident type", "Intensity", "Outcome",
-        "Peak force (g)", "Classification", "Standstill / recovery (s)",
-        "Avg pre-impact decel (km/h/s)", "Peak pre-impact decel (km/h/s)",
-        "Surrounding speed (km/h)", "Speed at impact (km/h)", "Speed before impact (km/h)",
-        "Onset to peak (s)", "Trip ID",
+        "timestamp", "latitude", "longitude", "heading", "event_type", "severity", "outcome",
+        "peak_g", "classification", "recovery_time_s",
+        "avg_preimpact_decel_kmh_s", "peak_preimpact_decel_kmh_s",
+        "surrounding_speed_kmh", "speed_at_impact_kmh", "speed_before_impact_kmh",
+        "suddenness_s", "trip_id",
     ]
     weights = [
-        27, 13, 13, 18, 12, 14, 13, 25, 22, 22, 22, 20, 21, 22, 15, 30
+        27, 13, 13, 13, 18, 12, 14, 13, 25, 22, 22, 22, 20, 21, 22, 15, 30
     ]
     matrix = rows_to_matrix(rows, columns, {
-        "Latitude": 6, "Longitude": 6,
-        "Peak force (g)": 2,
-        "Standstill / recovery (s)": 2,
-        "Avg pre-impact decel (km/h/s)": 2,
-        "Peak pre-impact decel (km/h/s)": 2,
-        "Surrounding speed (km/h)": 1,
-        "Speed at impact (km/h)": 1,
-        "Speed before impact (km/h)": 1,
-        "Onset to peak (s)": 2,
+        "latitude": 6, "longitude": 6,
+        "peak_g": 2,
+        "recovery_time_s": 2,
+        "avg_preimpact_decel_kmh_s": 2,
+        "peak_preimpact_decel_kmh_s": 2,
+        "surrounding_speed_kmh": 1,
+        "speed_at_impact_kmh": 1,
+        "speed_before_impact_kmh": 1,
+        "suddenness_s": 2,
     })
     story.append(make_table(matrix, column_widths(277, weights), font_size=5.2))
     story.append(Spacer(1, 3 * mm))
@@ -1001,23 +1009,23 @@ def write_braking_pdf(out: Path, rows: list[dict[str, Any]], merged: bool):
         stacked_meta=True,
     )
     columns = [
-        "Timestamp", "Latitude", "Longitude", "Incident type", "Avg deceleration (km/h/s)",
-        "Peak deceleration (km/h/s)", "Surrounding speed (km/h)",
-        "Speed at braking segment (km/h)", "Duration of flagged interval (s)",
-        "Road quality", "GPS distance (m)", "Time interval (s)", "Trip ID", "Segments represented",
+        "timestamp", "latitude", "longitude", "heading", "event_type", "avg_deceleration_kmh_s",
+        "peak_deceleration_kmh_s", "surrounding_speed_kmh",
+        "speed_at_braking_segment_kmh", "duration_flagged_interval_s",
+        "road_quality", "gps_distance_m", "time_interval_s", "trip_id", "segments_represented",
     ]
     weights = [
-        27, 13, 13, 18, 25, 25, 22, 25, 25, 15, 18, 18, 30, 18
+        27, 13, 13, 13, 18, 25, 25, 22, 25, 25, 15, 18, 18, 30, 18
     ]
     matrix = rows_to_matrix(rows, columns, {
-        "Latitude": 6, "Longitude": 6,
-        "Avg deceleration (km/h/s)": 2,
-        "Peak deceleration (km/h/s)": 2,
-        "Surrounding speed (km/h)": 1,
-        "Speed at braking segment (km/h)": 1,
-        "Duration of flagged interval (s)": 2,
-        "GPS distance (m)": 1,
-        "Time interval (s)": 3,
+        "latitude": 6, "longitude": 6,
+        "avg_deceleration_kmh_s": 2,
+        "peak_deceleration_kmh_s": 2,
+        "surrounding_speed_kmh": 1,
+        "speed_at_braking_segment_kmh": 1,
+        "duration_flagged_interval_s": 2,
+        "gps_distance_m": 1,
+        "time_interval_s": 3,
     })
     story.append(make_table(matrix, column_widths(277, weights), font_size=5.2))
     story.append(Spacer(1, 3 * mm))
@@ -1042,17 +1050,17 @@ def write_accuracy_pdf(out: Path, constants: dict[str, Any]):
 
     rows = [
         ["Variable", "Stored / calculated precision", "Accuracy / interpretation", "Source / caveat"],
-        ["Latitude", f"{constants['COORD_PRECISION']} decimal places", "~11 cm decimal-place resolution; practical GPS accuracy is much coarser.", "Source comment states GPS floor is roughly 1–3 m."],
-        ["Longitude", f"{constants['COORD_PRECISION']} decimal places", "~11 cm decimal-place resolution at the equator; practical GPS accuracy is much coarser.", "Storage precision is not the same as positional accuracy."],
+        ["latitude", f"{constants['COORD_PRECISION']} decimal places", "~11 cm decimal-place resolution; practical GPS accuracy is much coarser.", "Source comment states GPS floor is roughly 1–3 m."],
+        ["longitude", f"{constants['COORD_PRECISION']} decimal places", "~11 cm decimal-place resolution at the equator; practical GPS accuracy is much coarser.", "Storage precision is not the same as positional accuracy."],
         ["GNSS Speed", "Speed capped at 40 km/h and smoothed with a 5-point rolling average; output Speed rounded to 0.1 km/h.", "No independent speed error bound is specified in the repo.", "Do not interpret 0.1 km/h as sensor accuracy."],
         ["Braking intensity", "Calculated as (previous speed − current speed) / elapsed time; rounded to 2 decimals; capped at 50 km/h/s.", "Resolution of the reported calculation, not an uncertainty estimate.", "Threshold for is_braking is 2.0 km/h/s in the current GNSS path."],
         ["Peak force / acc_y", "acc_y decoded/rounded to 0.001 g in the source processing; crash peak_g exported to 0.01 g.", "No accelerometer calibration/error tolerance is specified in the repo.", "Reported g values should not be treated as ±0.01 g accurate."],
         ["Crash speed at impact", "Rounded to 0.1 km/h.", "Wheel-rotation estimate; explicitly not GNSS speed. Events whose estimate reaches ≥40 km/h are not trusted by the generator.", "Short wheel-rotation lookbacks can be unreliable."],
         ["Recovery time", "Rounded to 0.01 s.", "Represents the gap between wheel-stall readings and the next distinct wheel-rotation reading.", "Temporal resolution depends on the underlying data1/sample timing."],
         ["Crash onset / suddenness", "Rounded to 0.01 s.", "Time from onset of the relevant accelerometer excursion to the peak sample.", "Raw accelerometer timing uses sample/timestamp mapping in the generator."],
-        ["Timestamp", "ISO timestamp on segments; crash point currently exports time_str (HH:MM:SS).", "Full crash date/time is reconstructed here only when a same-trip segment timestamp can be matched to the crash clock time.", "If no match exists, the PDF retains the original time_str."],
+        ["timestamp", "ISO timestamp on segments; crash point currently exports time_str (HH:MM:SS).", "Full crash date/time is reconstructed here only when a same-trip segment timestamp can be matched to the crash clock time.", "If no match exists, the PDF retains the original time_str."],
         ["Crash coordinates", "Point geometry stored as longitude/latitude.", "Explicitly approximate.", "Current generator writes location_approximate = true."],
-        ["Road quality", "Integer score already calculated in the pipeline.", "A categorical/derived road-quality score, not a direct sensor accuracy measurement.", "0 means unavailable/unknown in the current frontend."],
+        ["road_quality", "Integer score already calculated in the pipeline.", "A categorical/derived road-quality score, not a direct sensor accuracy measurement.", "0 means unavailable/unknown in the current frontend."],
     ]
     story.append(make_table(rows, column_widths(190, [31, 55, 60, 44]), font_size=6.3))
 
@@ -1111,17 +1119,17 @@ def main():
     for crash in crashes:
         tid = str(crash.get("properties", {}).get("trip_id", ""))
         crash_rows.append(crash_row(crash, segments.get(tid, [])))
-    crash_rows.sort(key=lambda r: str(r.get("Timestamp", "")))
+    crash_rows.sort(key=lambda r: str(r.get("timestamp", "")))
 
     if args.merge_braking:
         groups = []
         for tid, segs in segments.items():
             groups.extend(merge_braking_segments(segs))
         braking_rows = [braking_row(g) for g in groups]
-        braking_rows.sort(key=lambda r: str(r.get("Timestamp", "")))
+        braking_rows.sort(key=lambda r: str(r.get("timestamp", "")))
     else:
         braking_rows = [braking_row([f]) for f in features if is_braking(f)]
-        braking_rows.sort(key=lambda r: str(r.get("Timestamp", "")))
+        braking_rows.sort(key=lambda r: str(r.get("timestamp", "")))
 
     outputs = [
         args.output_dir / "incident_threshold_definitions.pdf",

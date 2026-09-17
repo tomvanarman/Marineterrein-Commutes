@@ -724,13 +724,11 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                     distance_m    = revolutions * wheel_circumference_m
                     raw_speed_kmh = (distance_m / lb_time_s) * 3.6
                     if raw_speed_kmh >= CRASH_SPEED_CAP_KMH:
-                        # Short lookback window blew the estimate past a
-                        # plausible bike speed -- rather than clamp-and-
-                        # report a fake number, drop the whole event: we
-                        # can't trust it enough to call it a confirmed
-                        # fall (see CRASH_SPEED_CAP_KMH above).
-                        continue
-                    speed_kmh = round(raw_speed_kmh, 1)
+                        # The wheel-speed estimate is implausible, so keep the
+                        # crash event but do not report an unreliable speed.
+                        speed_kmh = None
+                    else:
+                        speed_kmh = round(raw_speed_kmh, 1)
 
             came_to_stop = False
             recovery_time_s = None
