@@ -385,13 +385,10 @@ def derive_crash_datetime(crash: dict[str, Any], segs: list[dict[str, Any]]) -> 
 
 
 def classify_crash(p: dict[str, Any]) -> str:
-    # The generator now explicitly classifies genuinely stationary-before-impact
-    # events as Tips. Keep the speed fallback for older GeoJSON that predates
-    # the explicit crash_type field.
+    # Tips are explicitly marked with crash_type="Tip". Moving crash events
+    # currently leave crash_type blank, so classification falls back to speed.
     if p.get("crash_type"):
         return str(p["crash_type"])
-    if boolish(p.get("speed_at_impact_unreliable")):
-        return "High-Speed Fall"
     speed = clean_num(p.get("preimpact_speed_kmh"))
     if speed is None:
         speed = clean_num(p.get("speed_at_impact_kmh"))
@@ -882,20 +879,19 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
 
     heading(story, "4. Crash classification", styles)
     classification = [
-        ["Condition", "classification"],
-        ["crash_type = Tip", "Tip (stationary before impact and stationary after impact)"],
-        ["speed_at_impact_unreliable = true", "High-Speed Fall (speed estimate discarded, not measured)"],
-        ["Legacy fallback: speed ≤1 km/h", "Tip"],
-        ["Legacy fallback: >1–10 km/h", "Low-Speed Fall"],
-        ["Legacy fallback: >10 km/h", "High-Speed Fall"],
-        ["No trustworthy speed and no crash_type", "Unclassified"],
+        ["Condition", "Classification"],
+        ['crash_type = "Tip"', "Tip"],
+        ["No crash_type; speed ≤1 km/h", "Tip"],
+        ["No crash_type; >1–10 km/h", "Low-Speed Fall"],
+        ["No crash_type; >10 km/h", "High-Speed Fall"],
+        ["No crash_type and no usable speed", "Unclassified"],
     ]
     story.append(make_table(classification, column_widths(100, [55, 45]), font_size=7))
     story.append(Paragraph(
-        "The report now uses the generator's explicit crash_type when present. In the current generator, "
-        "stationary-before events that also remain stationary after impact are exported as crash_type = Tip. "
-        "For older GeoJSON without crash_type, the report keeps a speed-based fallback: ≤1 km/h is treated as Tip, "
-        ">1–10 km/h as Low-Speed Fall, and >10 km/h as High-Speed Fall.", styles["small"]))
+        "A Tip is explicitly marked with crash_type = Tip when the bike was stationary before the impact "
+        "and remains stationary afterward. Moving crash events currently have no crash_type value, so this "
+        "report uses the available pre-impact or impact speed to distinguish Low-Speed Fall from High-Speed Fall. "
+        "If no usable speed is available, the event is reported as Unclassified.", styles["small"]))
 
     heading(story, "5. Crash outcome", styles)
     outcome_tbl = [
@@ -905,6 +901,11 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
         ["Unclassified", "Neither outcome field establishes a state"],
     ]
     story.append(make_table(outcome_tbl, column_widths(100, [35, 65]), font_size=7))
+    story.append(Paragraph(
+        "The current generator exports a crash only after the required stop/recovery conditions are satisfied, "
+        "so crash points produced by the current pipeline are expected to be Resolved. "
+        "Unresolved is retained as a valid outcome for any record that explicitly contains unresolved = true.",
+        styles["small"]))
 
     heading(story, "6. Sudden braking definition", styles)
     braking_tbl = [
