@@ -80,7 +80,7 @@ SPEED_SMOOTH_WIN   = 5      # rolling average window for gnss speed
 SEGMENT_PROPS_TO_KEEP = {
     "trip_id", "Speed", "Speed_display", "road_quality",
     "time_diff_s", "gps_distance_m", "braking_intensity",
-    "is_braking", "time_str", "timestamp",
+    "is_braking", "time_str", "timestamp", "heading",
 }
 # 6 decimal places ≈ 11cm — below GPS's own ~1-3m accuracy floor, so this
 # loses no real precision. Going lower (5dp ≈ 1.1m, 4dp ≈ 11m) was tested
@@ -209,9 +209,9 @@ where x.output_samples >= mb.start_sample
 order by x.output_samples
 """
 
-# 2. GNSS points with speed (already in km/h)
+# 2. GNSS points with speed (already in km/h) and heading (degrees, device-reported)
 GNSS_QUERY = """
-select latitude, longitude, speed, "timestamp"
+select latitude, longitude, speed, heading, "timestamp"
 from public.gnss
 where trip_id = %(trip_id)s
   and latitude  is not null
@@ -783,6 +783,7 @@ def detect_crash_events_api(raw_rows, raw_cols, d1_rows, d1_cols,
                     "unresolved":           unresolved,
                     "time_str":             onset_ts.strftime("%H:%M:%S") if onset_ts else None,
                     "location_approximate": True,
+                    "heading":              round(float(fix["heading"]), 1) if fix.get("heading") is not None else None,
                 },
             })
 
@@ -908,6 +909,7 @@ def rows_to_features(gnss_rows, gnss_cols, raw_rows, raw_cols,
                 "wheel_diameter_mm": wheel_diam_mm,
                 "braking_intensity": braking_intensity,
                 "is_braking":        braking_intensity >= BRAKING_DECEL_THRESHOLD_GPS_KMH_S,
+                "heading":           round(float(a["heading"]), 1) if a.get("heading") is not None else None,
             },
         })
 
