@@ -18,13 +18,20 @@ Optional source-code files (used only to document the definitions/thresholds):
     app.js
 
 Outputs (saved by default in ./incident_reports/):
-    incident_threshold_definitions.pdf
-    crash_incident_table.pdf
-    sudden_braking_incident_table.pdf
-    variable_accuracy_table.pdf
+    incident_threshold_definitions.pdf   (unchanged: prose + several small
+                                           definition tables, not one clean
+                                           row-per-record table)
+    crash_incident_table.csv             (was .pdf; one row per crash point)
+    sudden_braking_incident_table.csv    (was .pdf; one row per braking
+                                           record — see --merge-braking)
+    variable_accuracy_table.pdf          (unchanged: prose + sub-tables)
+
+Note: the two incident tables export as CSV now instead of PDF, with raw,
+full-precision values (not the rounded/reformatted strings the old PDF
+tables displayed) — meant for further processing, not direct reading.
 
 Dependency:
-    reportlab
+    reportlab (still used for the two remaining PDFs)
 
 Install once if needed:
     python -m pip install reportlab
@@ -40,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import csv
 import json
 import math
 from collections import defaultdict
@@ -51,7 +59,7 @@ from typing import Any, Iterable
 try:
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import (
@@ -820,6 +828,19 @@ def rows_to_matrix(rows: list[dict[str, Any]], columns: list[str], decimals: dic
     return matrix
 
 
+def rows_to_raw_matrix(rows: list[dict[str, Any]], columns: list[str]):
+    """Like rows_to_matrix, but for CSVs meant for further processing:
+    no rounding, no display formatting, no dd/mm/yyyy timestamp reformat,
+    no "—" placeholder for missing values. Values pass through exactly as
+    stored in the row dict (full-precision float, bool, or the original
+    ISO/HH:MM:SS timestamp string); missing values are left as None, which
+    csv.writer renders as an empty field."""
+    matrix = [columns]
+    for row in rows:
+        matrix.append([row.get(col) for col in columns])
+    return matrix
+
+
 def column_widths(total_mm: float, weights: list[float]) -> list[float]:
     total = sum(weights)
     return [total_mm * mm * w / total for w in weights]
@@ -956,21 +977,14 @@ def write_threshold_pdf(out: Path, constants: dict[str, Any], features, crashes,
     doc.build(story)
 
 
-def write_crash_pdf(out: Path, rows: list[dict[str, Any]]):
-    styles = make_styles()
-    page = landscape(A4)
-    doc = build_doc(out, page, "Crash incident table")
-    story = []
-    report_header(
-        story,
-        "Crash and fall incidents",
-        f"One row per crash point already exported in trips.geojson. {len(rows):,} incident(s). Context fields are derived from stored trip segments; incident detection is not rerun.",
-        styles,
-        kicker=None,
-        subtitle_style=styles["subtitle_plain"],
-        stacked_meta=True,
-    )
-
+def write_crash_csv(out: Path, rows: list[dict[str, Any]]) -> None:
+    # Raw values for further processing: no rounding, no display
+    # formatting -- see rows_to_raw_matrix. Same columns/order the old
+    # PDF table used. The two context notes that used to sit below the
+    # PDF table ("coordinates at GeoJSON precision", "pre-impact decel =
+    # 5s window") aren't repeatable in a bare CSV; they're preserved in
+    # this script's docstring and in write_threshold_pdf's "Derived
+    # report fields" section instead.
     columns = [
         "timestamp", "latitude", "longitude", "heading", "event_type", "severity", "outcome",
         "peak_g", "classification", "recovery_time_s",
@@ -978,66 +992,28 @@ def write_crash_pdf(out: Path, rows: list[dict[str, Any]]):
         "surrounding_speed_kmh", "speed_at_impact_kmh", "speed_before_impact_kmh",
         "suddenness_s", "trip_id",
     ]
-    weights = [
-        27, 13, 13, 13, 18, 12, 14, 13, 25, 22, 22, 22, 20, 21, 22, 15, 30
-    ]
-    matrix = rows_to_matrix(rows, columns, {
-        "latitude": 6, "longitude": 6,
-        "peak_g": 2,
-        "recovery_time_s": 2,
-        "avg_preimpact_decel_kmh_s": 2,
-        "peak_preimpact_decel_kmh_s": 2,
-        "surrounding_speed_kmh": 1,
-        "speed_at_impact_kmh": 1,
-        "speed_before_impact_kmh": 1,
-        "suddenness_s": 2,
-    })
-    story.append(make_table(matrix, column_widths(277, weights), font_size=5.2))
-    story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph(
-        "Coordinates are shown to the precision stored in the GeoJSON. ‘Standstill / recovery’ is the exported recovery_time_s: the gap from wheel stall to the next distinct wheel-rotation reading. ‘Avg/peak pre-impact decel’ is based on stored GNSS braking_intensity values in the 5 seconds before the crash.", styles["small"]))
-    doc.build(story)
+    matrix = rows_to_raw_matrix(rows, columns)
+    with out.open("w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerows(matrix)
 
 
-def write_braking_pdf(out: Path, rows: list[dict[str, Any]], merged: bool):
-    styles = make_styles()
-    page = landscape(A4)
-    doc = build_doc(out, page, "Sudden braking incidents")
-    story = []
-    mode = "Adjacent flagged segments were merged into reporting groups." if merged else "One row per existing is_braking=true segment; no new incident detection/grouping was applied."
-    report_header(
-        story,
-        "Sudden braking incidents",
-        f"{len(rows):,} row(s). {mode}",
-        styles,
-        kicker=None,
-        subtitle_style=styles["subtitle_plain"],
-        stacked_meta=True,
-    )
+def write_braking_csv(out: Path, rows: list[dict[str, Any]]) -> None:
+    # Raw values for further processing -- see rows_to_raw_matrix. Same
+    # columns/order the old PDF table used. The "merged vs. unmerged" mode
+    # note that used to be the PDF's subtitle is no longer embedded in the
+    # file itself (nowhere clean to put free text without breaking simple
+    # readers) -- main() prints it to the console on every run instead,
+    # and segments_represented (already a column here) tells you per-row
+    # whether that row is a merge.
     columns = [
         "timestamp", "latitude", "longitude", "heading", "event_type", "avg_deceleration_kmh_s",
         "peak_deceleration_kmh_s", "surrounding_speed_kmh",
         "speed_at_braking_segment_kmh", "duration_flagged_interval_s",
         "road_quality", "gps_distance_m", "time_interval_s", "trip_id", "segments_represented",
     ]
-    weights = [
-        27, 13, 13, 13, 18, 25, 25, 22, 25, 25, 15, 18, 18, 30, 18
-    ]
-    matrix = rows_to_matrix(rows, columns, {
-        "latitude": 6, "longitude": 6,
-        "avg_deceleration_kmh_s": 2,
-        "peak_deceleration_kmh_s": 2,
-        "surrounding_speed_kmh": 1,
-        "speed_at_braking_segment_kmh": 1,
-        "duration_flagged_interval_s": 2,
-        "gps_distance_m": 1,
-        "time_interval_s": 3,
-    })
-    story.append(make_table(matrix, column_widths(277, weights), font_size=5.2))
-    story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph(
-        "The braking intensity values are the existing braking_intensity values from the GeoJSON. Surrounding speed is calculated from stored Speed values within ±5 seconds of the first flagged segment. ‘Road quality’ is the existing road_quality score, not a new classification.", styles["small"]))
-    doc.build(story)
+    matrix = rows_to_raw_matrix(rows, columns)
+    with out.open("w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerows(matrix)
 
 
 def write_accuracy_pdf(out: Path, constants: dict[str, Any]):
@@ -1139,15 +1115,21 @@ def main():
 
     outputs = [
         args.output_dir / "incident_threshold_definitions.pdf",
-        args.output_dir / "crash_incident_table.pdf",
-        args.output_dir / "sudden_braking_incident_table.pdf",
+        args.output_dir / "crash_incident_table.csv",
+        args.output_dir / "sudden_braking_incident_table.csv",
         args.output_dir / "variable_accuracy_table.pdf",
     ]
 
     write_threshold_pdf(outputs[0], constants, features, crashes, braking_count)
-    write_crash_pdf(outputs[1], crash_rows)
-    write_braking_pdf(outputs[2], braking_rows, args.merge_braking)
+    write_crash_csv(outputs[1], crash_rows)
+    write_braking_csv(outputs[2], braking_rows)
     write_accuracy_pdf(outputs[3], constants)
+
+    braking_mode = (
+        "adjacent flagged segments merged into reporting groups"
+        if args.merge_braking
+        else "one row per existing is_braking=true segment; no new incident detection/grouping applied"
+    )
 
     print("\nDone — generated:")
     for p in outputs:
@@ -1156,7 +1138,7 @@ def main():
     print(f"Features: {len(features):,}")
     print(f"Crash points: {len(crashes):,}")
     print(f"Flagged braking segments: {braking_count:,}")
-    print(f"Braking report rows: {len(braking_rows):,}")
+    print(f"Braking report rows: {len(braking_rows):,} ({braking_mode})")
     print("Supabase: NOT USED")
 
 
