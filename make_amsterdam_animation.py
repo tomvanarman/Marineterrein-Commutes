@@ -4,25 +4,26 @@ Standalone Amsterdam bike-trip animations using the same CARTO Dark Matter
 basemap and the same sensor colour mapping as the dashboard.
  
 Outputs:
-  amsterdam_trips_live.gif          - full route network always visible;
+  amsterdam_trips_live.mp4          - full route network always visible;
                                        dots continuously travel the routes,
                                        each looping on its own staggered
                                        cycle so the city is always moving.
-  amsterdam_trips_chronological.gif - trips drawn on one at a time, in the
+  amsterdam_trips_chronological.mp4 - trips drawn on one at a time, in the
                                        order they actually happened.
-  amsterdam_trips_growth.gif        - trips drawn on one at a time, ordered
+  amsterdam_trips_growth.mp4        - trips drawn on one at a time, ordered
                                        to spread outward from Marineterrein
                                        (see compute_growth_order()).
  
 Install:
-  pip install playwright pillow
+  pip install playwright pillow imageio-ffmpeg   # imageio-ffmpeg bundles ffmpeg
   playwright install chromium
  
 Run:
   python make_amsterdam_animation_osm_v11.py trips.geojson
  
 The browser needs internet access while rendering because MapLibre loads the
-CARTO/OSM basemap tiles. The resulting GIFs are standalone files.
+CARTO/OSM basemap tiles. The resulting MP4s (H.264, yuv420p) are standalone
+files that play in QuickTime, browsers, Slack, PowerPoint, etc.
 """
 
 import io
@@ -30,6 +31,8 @@ import json
 import math
 import os
 import random
+import shutil
+import subprocess
 import sys
 import tempfile
 from collections import defaultdict
@@ -70,11 +73,11 @@ MIN_LIVE_TRIP_DURATION_S = 8.0
 # on the same sensor's route are ever animated at once -- rather than trying
 # to serialize every single historical trip with zero overlap, which blows
 # up badly on a busy corridor (e.g. 40 trips needing 20-40 minutes to each
-# get an overlap-free turn). The GIF's length stays fixed regardless of how
+# get an overlap-free turn). The video's length stays fixed regardless of how
 # much data you feed it, so file size and render time stay predictable.
 LIVE_MIN_ANIMATION_S = 20.0        # slowest a dot can traverse its route, in seconds
 LIVE_DURATION_SCALE = 1.0 / 100.0  # how much a trip's real duration stretches the animated time
-LIVE_TOTAL_SECONDS = 48.0          # fixed length of the looping "alive" GIF
+LIVE_TOTAL_SECONDS = 48.0          # fixed length of the "alive" video
 LIVE_MAX_CONCURRENT_PER_ROUTE = 4  # hard cap: this many dots, max, on one corridor at once
 LIVE_ROUTE_GAP_S = 1.5             # buffer between two dots sharing the same lane
 LIVE_BACKGROUND_OPACITY = 0.50     # opacity of the always-visible route network
@@ -84,7 +87,7 @@ LIVE_BRAKE_SPEED_RATIO = 0.18      # fraction of a trip's own top speed treated 
 CHRONO_SECONDS_PER_TRIP = 0.30
 
 # "Growth" draw-on animation: same crisp draw-on style as the chronological
-# GIF, but ordered outward from Marineterrein instead of by real-world time.
+# video, but ordered outward from Marineterrein instead of by real-world time.
 # Approximate coordinates of the Marineterrein main entrance
 # (Kattenburgerstraat) -- nudge these if you want a different seed point.
 ORIGIN_LON = 4.9160
@@ -92,7 +95,7 @@ ORIGIN_LAT = 52.3706
 GROWTH_SECONDS_PER_TRIP = 0.30
 
 # Many trips are the same rider doing the same commute on a different day,
-# so without deduping, the growth GIF ends up re-drawing the same physical
+# so without deduping, the growth animation ends up re-drawing the same physical
 # route back-to-back -- it reads as a stutter/lag rather than exploration.
 # Only the growth animation dedupes (live/chronological still show every
 # trip). Two trips are treated as the same route if their sampled points
@@ -619,22 +622,47 @@ def head_feature(trip, p, stopped=False):
 # Rendering
 # ---------------------------------------------------------------------------
 
-def save_gif(frames, path):
-    # Adaptive palette keeps the basemap reasonably detailed while retaining
-    # strong sensor colours.
-    paletted = [
-        frame.convert('P', palette=Image.Palette.ADAPTIVE, colors=192)
-        for frame in frames
-    ]
-    paletted[0].save(
-        path,
-        save_all=True,
-        append_images=paletted[1:],
-        duration=int(1000 / FPS),
-        loop=0,
-        optimize=False,
-        disposal=2,
+def find_ffmpeg():
+    # Prefer the ffmpeg binary bundled with imageio-ffmpeg (no system install
+    # needed); fall back to whatever ffmpeg is on PATH.
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        exe = shutil.which('ffmpeg')
+        if exe:
+            return exe
+    raise SystemExit(
+        'ffmpeg not found. Install it with `pip install imageio-ffmpeg` '
+        'or `brew install ffmpeg`.'
     )
+
+
+def save_mp4(frames, path):
+    # H.264 + yuv420p is the widely compatible combination (QuickTime, iOS,
+    # browsers). Width/height must be even for yuv420p -- 1100x720 is.
+    # CRF 16 keeps the thin route lines and dark basemap crisp; +faststart
+    # moves the index to the front so the file streams/plays immediately.
+    w, h = frames[0].size
+    cmd = [
+        find_ffmpeg(), '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+        '-s', f'{w}x{h}', '-r', str(FPS), '-i', '-',
+        '-an',
+        '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+        '-c:v', 'libx264', '-preset', 'slow', '-crf', '16',
+        '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+        str(path),
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    try:
+        for frame in frames:
+            proc.stdin.write(frame.convert('RGB').tobytes())
+    finally:
+        proc.stdin.close()
+        rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError(f'ffmpeg failed with exit code {rc}')
 
 
 def render(output_dir, geojson_path, force=False):
@@ -678,11 +706,11 @@ def render(output_dir, geojson_path, force=False):
                     png = page.screenshot(type='png', timeout=60000)
                     frames.append(Image.open(io.BytesIO(png)).convert('RGB'))
 
-                save_gif(frames, path)
+                save_mp4(frames, path)
                 print(f"Wrote {path} ({os.path.getsize(path)/1e6:.1f} MB, {total_frames} frames)")
 
             def maybe_capture(path, total_frames, builder):
-                # Skip a GIF that's already on disk unless --force is passed,
+                # Skip an MP4 that's already on disk unless --force is passed,
                 # so re-running the script while iterating on one animation
                 # doesn't re-render the other one (which is slow: a fresh
                 # page load + one screenshot per frame) for no reason.
@@ -710,7 +738,7 @@ def render(output_dir, geojson_path, force=False):
             # IS eventually scheduled into some lane's queue and does get a
             # turn as that lane's cycle loops; what's bounded is how many
             # dots are visible on one corridor at the same instant, not
-            # which trips ever get shown (the chronological GIF is a
+            # which trips ever get shown (the chronological video is a
             # different, non-looping record of the same completeness).
             # ---------------------------------------------------------------
             live_trips = [
@@ -901,23 +929,23 @@ def render(output_dir, geojson_path, force=False):
             # Each capture gets its own fresh page (and the previous one is
             # closed first) so a long first capture can't leave the browser
             # short on memory or otherwise sluggish for the second one.
-            # maybe_capture() additionally skips a GIF entirely if it's
+            # maybe_capture() additionally skips an MP4 entirely if it's
             # already on disk (see its definition above), so re-running
             # while iterating on just one of the two is cheap.
             maybe_capture(
-                output_dir / 'amsterdam_trips_live.gif',
+                output_dir / 'amsterdam_trips_live.mp4',
                 live_frames,
                 live_builder,
             )
 
             maybe_capture(
-                output_dir / 'amsterdam_trips_chronological.gif',
+                output_dir / 'amsterdam_trips_chronological.mp4',
                 chrono_frames,
                 chronological_builder,
             )
 
             maybe_capture(
-                output_dir / 'amsterdam_trips_growth.gif',
+                output_dir / 'amsterdam_trips_growth.mp4',
                 growth_frames,
                 growth_builder,
             )
@@ -933,7 +961,7 @@ if __name__ == '__main__':
     if len(args) != 1:
         raise SystemExit(
             'Usage: python make_amsterdam_animation_osm_v11.py trips.geojson [--force]\n'
-            '  --force  regenerate both GIFs even if they already exist on disk'
+            '  --force  regenerate all MP4s even if they already exist on disk'
         )
 
     # Write outputs beside the script when running locally on the Mac.
